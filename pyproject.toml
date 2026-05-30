@@ -41,6 +41,9 @@ source = ["horus_docker"]
 [tool.coverage.report]
 omit = ["tests/*"]
 
+[tool.hatch.build]
+artifacts = ["src/horus_docker/locale/**/LC_MESSAGES/*.mo"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/horus_docker"]
 
@@ -109,6 +112,3 @@ convention = "google"
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
-
-[tool.setuptools.package-data]
-horus_docker = ["py.typed", "locale/**/LC_MESSAGES/*.mo"]

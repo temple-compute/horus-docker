@@ -143,7 +143,10 @@ class DockerExecutor(BaseExecutor):
         """
         Run the task's command inside a Docker container.
         """
-        assert isinstance(task.runtime, CommandRuntime)
+        if not isinstance(task.runtime, CommandRuntime):
+            raise TaskExecutionError(
+                _("DockerExecutor only supports CommandRuntime runtimes.")
+            )
         prepared_command = await task.runtime.setup_runtime(task)
         command = ["/bin/sh", "-c", prepared_command]
 
