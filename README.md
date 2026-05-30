@@ -14,7 +14,7 @@ A template for building plugins for [horus-runtime](https://github.com/temple-co
 This repository is a batteries-included starting point. It ships with:
 
 - A concrete `CustomTask` that extends `BaseTask`.
-- A plugin-scoped i18n module (`my_plugin.i18n`) so your strings can be translated independently of the runtime.
+- A plugin-scoped i18n module (`horus_docker.i18n`) so your strings can be translated independently of the runtime.
 - A `pytest` test skeleton with a shared `HorusContext` fixture.
 - A `Makefile` with the same targets used by the runtime itself (lint, type-check, format, i18n, …).
 - Pre-commit hooks for ruff, mypy, and Babel completeness checks.
@@ -25,7 +25,7 @@ This repository is a batteries-included starting point. It ships with:
 
 ```
 src/
-└── my_plugin/
+└── horus_docker/
     ├── __init__.py
     ├── i18n.py                  # plugin-scoped gettext wrapper
     ├── locale/
@@ -97,7 +97,7 @@ Each plugin maintains its **own** gettext domain and locale directory, independe
 
 ### How it works
 
-`src/my_plugin/i18n.py` wraps Python's `gettext` module, looking for compiled `.mo` files in `src/my_plugin/locale/<lang>/LC_MESSAGES/my_plugin.mo`. If no catalog exists for the detected locale, it falls back to returning the original string unchanged.
+`src/horus_docker/i18n.py` wraps Python's `gettext` module, looking for compiled `.mo` files in `src/horus_docker/locale/<lang>/LC_MESSAGES/horus_docker.mo`. If no catalog exists for the detected locale, it falls back to returning the original string unchanged.
 
 Import the wrapper as `_` (required by Babel's extractor) in any module with user-visible strings. Use `make babel-extract` → edit `.po` → `make babel-check` to update translations. The pre-commit hook prevents committing incomplete catalogs.
 
@@ -116,8 +116,8 @@ Import the wrapper as `_` (required by Babel's extractor) in any module with use
 
 ```bash
 # Create an isolated environment (micromamba recommended)
-micromamba create -y -n my_plugin python=3.13
-micromamba activate my_plugin
+micromamba create -y -n horus_docker python=3.13
+micromamba activate horus_docker
 
 # Install in editable mode with dev dependencies
 pip install -e ".[dev]"
