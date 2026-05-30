@@ -1,23 +1,17 @@
-# my-plugin
+# horus-docker
 
 [![Python 3.13+](https://img.shields.io/badge/python-3.13%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A template for building plugins for [horus-runtime](https://github.com/temple-compute/horus-runtime).
+A [horus-runtime](https://github.com/temple-compute/horus-runtime) plugin that runs tasks inside Docker containers.
 
 ---
 
 ## Overview
 
-**horus-runtime** loads plugins through Python [entry points](https://packaging.python.org/en/latest/specifications/entry-points/). Any package that declares an entry point under one of the `horus.*` groups is automatically discovered and registered when `HorusContext.boot()` is called.
+**horus-docker** contributes a `DockerExecutor` to the `horus.executor` entry point group. Once installed, any `HorusContext` that calls `HorusContext.boot()` will automatically discover and register the executor — no manual wiring required.
 
-This repository is a batteries-included starting point. It ships with:
-
-- A concrete `CustomTask` that extends `BaseTask`.
-- A plugin-scoped i18n module (`my_plugin.i18n`) so your strings can be translated independently of the runtime.
-- A `pytest` test skeleton with a shared `HorusContext` fixture.
-- A `Makefile` with the same targets used by the runtime itself (lint, type-check, format, i18n, …).
-- Pre-commit hooks for ruff, mypy, and Babel completeness checks.
+The executor accepts a `CommandRuntime`-produced shell command and runs it via `/bin/sh -c` inside a fresh Docker container, giving you the same shell semantics (pipes, globbing, `&&`, …) as the local shell executor.
 
 ---
 
@@ -25,20 +19,20 @@ This repository is a batteries-included starting point. It ships with:
 
 ```
 src/
-└── my_plugin/
+└── horus_docker/
     ├── __init__.py
     ├── i18n.py                  # plugin-scoped gettext wrapper
     ├── locale/
     │   └── messages.pot         # translatable strings template
-    └── task/
+    └── executor/
         ├── __init__.py
-        └── custom_task.py       # example task
+        └── docker.py            # DockerExecutor implementation
 tests/
 ├── __init__.py
 ├── conftest.py                  # shared fixtures (registry, HorusContext)
 └── unit/
     ├── __init__.py
-    └── test_custom_task.py
+    └── test_docker_executor.py
 babel.cfg
 Makefile
 pyproject.toml
@@ -46,62 +40,31 @@ pyproject.toml
 
 ---
 
-## Extending horus-runtime
+## DockerExecutor
 
-### Extension points
+Registered under `kind = "docker_executor"`. Only accepted when the task's runtime is a `CommandRuntime`.
 
-The runtime defines the following entry point groups. A plugin can contribute to one or more of them by declaring the group and pointing it at the module that defines the subclass.
+### Fields
 
-| Group | Base class | `registry_key` field | Purpose |
+| Field | Type | Default | Description |
 |---|---|---|---|
-| `horus.task` | `BaseTask` | `kind` | Unit of work executed by the runtime |
-| `horus.artifact` | `BaseArtifact` | `kind` | Data produced or consumed by a task |
-| `horus.executor` | `BaseExecutor` | `kind` | Runs a task in a specific environment (local, SLURM, …) |
-| `horus.runtime` | `BaseRuntime` | `kind` | Prepares the command/script handed to an executor |
-| `horus.target` | `BaseTarget` | `kind` | Describes *where* a task is dispatched |
-| `horus.event` | `BaseEvent` | `event_type` | Structured event emitted on the event bus |
+| `image` | `str` | required | Docker image to run (e.g. `python:3.13-slim`) |
+| `env` | `dict[str, str]` | `{}` | Environment variables passed into the container |
+| `volumes` | `dict[str, str]` | `{}` | Bind mounts as `host_path → container_path` (read-write) |
+| `ports` | `dict[str, str]` | `{}` | Port mappings as `host_port → container_port` |
+| `working_dir` | `str \| None` | `None` | Working directory inside the container |
+| `network` | `str \| None` | `None` | Docker network to attach the container to |
+| `entrypoint` | `str \| list[str] \| None` | `None` | Override the image's `ENTRYPOINT` |
+| `user` | `str \| None` | `None` | User (`name`/`uid`, optionally `uid:gid`) to run as |
+| `auto_remove` | `bool` | `True` | Remove the container after execution finishes |
 
-### How registration works
+### Behaviour
 
-When `HorusContext.boot()` runs, it calls `AutoRegistry.init_registry()`, which:
-
-1. Iterates every installed package's `horus.*` entry point groups.
-2. Calls `.load()` on each entry point, importing the declared module.
-3. The act of importing the module executes the class body, which triggers `AutoRegistry` and adds the class to the correct registry under its discriminator key.
-
-Declaring an entry point is therefore sufficient, you do not need to call any registration function manually.
-
-### Adding a task
-
-Subclass `BaseTask`, set a globally unique `kind`, implement `_run()`, and declare the entry point in `pyproject.toml` under `[project.entry-points."horus.task"]`. Reinstall with `pip install -e .`.
-
-### Adding an artifact
-
-Subclass `BaseArtifact` and implement `exists()`, `hash()`, and `size()`. Declare the entry point under `[project.entry-points."horus.artifact"]`.
-
-### Adding an executor
-
-Subclass `BaseExecutor` and implement `execute()`. Optionally restrict accepted runtimes via the `runtimes` class variable. Declare the entry point under `[project.entry-points."horus.executor"]`.
-
-### Adding a custom event
-
-Subclass `BaseEvent`, set `event_type`, and emit via `ctx.bus.emit(...)`. Subscribe by subclassing `HorusEventSubscriber` and adding a matching `on_<event_type>` method.
-
-> Full class signatures, field references, and worked examples are at [docs.templecompute.com](https://docs.templecompute.com/docs/sdk/overview).
-
----
-
-## Internationalization (i18n)
-
-Each plugin maintains its **own** gettext domain and locale directory, independent of the runtime's translations.
-
-### How it works
-
-`src/my_plugin/i18n.py` wraps Python's `gettext` module, looking for compiled `.mo` files in `src/my_plugin/locale/<lang>/LC_MESSAGES/my_plugin.mo`. If no catalog exists for the detected locale, it falls back to returning the original string unchanged.
-
-Import the wrapper as `_` (required by Babel's extractor) in any module with user-visible strings. Use `make babel-extract` → edit `.po` → `make babel-check` to update translations. The pre-commit hook prevents committing incomplete catalogs.
-
-> Full i18n workflow and plural-form reference: [docs.templecompute.com](https://docs.templecompute.com/docs/sdk/i18n).
+1. The task's `CommandRuntime` prepares the shell command via `setup_runtime()`.
+2. The command is wrapped as `["/bin/sh", "-c", <command>]` and passed to `docker-py`'s `containers.run()`.
+3. The container runs to completion (blocking, dispatched to a thread with `asyncio.to_thread`).
+4. Container logs are captured and emitted at `DEBUG` level.
+5. If the Docker daemon raises a `DockerException`, or the container exits with a non-zero status code, a `TaskExecutionError` is raised.
 
 ---
 
@@ -110,20 +73,17 @@ Import the wrapper as `_` (required by Babel's extractor) in any module with use
 ### Requirements
 
 - Python ≥ 3.13
-- `horus-runtime` ≥ 0.0.1 (install from source or PyPI)
+- Docker daemon accessible from the host
+- `horus-runtime` ≥ 0.1.1 (install from source or PyPI)
 
 ### Setup
 
 ```bash
-# Create an isolated environment (micromamba recommended)
-micromamba create -y -n my_plugin python=3.13
-micromamba activate my_plugin
-
-# Install in editable mode with dev dependencies
-pip install -e ".[dev]"
+# Install dependencies (creates .venv automatically)
+uv sync
 
 # Install pre-commit hooks
-pre-commit install
+uv run pre-commit install
 ```
 
 ### Common commands
@@ -138,6 +98,18 @@ pre-commit install
 | `make babel-add LANG=es` | Add a new language |
 | `make babel-check` | Verify all strings are translated |
 | `make clean` | Remove build artefacts and caches |
+
+---
+
+## Internationalization (i18n)
+
+Each plugin maintains its **own** gettext domain and locale directory, independent of the runtime's translations.
+
+`src/horus_docker/i18n.py` wraps Python's `gettext` module, looking for compiled `.mo` files in `src/horus_docker/locale/<lang>/LC_MESSAGES/horus_docker.mo`. If no catalog exists for the detected locale, it falls back to the original string.
+
+Import the wrapper as `_` (required by Babel's extractor) in any module with user-visible strings. Use `make babel-extract` → edit `.po` → `make babel-check` to update translations. The pre-commit hook prevents committing incomplete catalogs.
+
+> Full i18n workflow and plural-form reference: [docs.templecompute.com](https://docs.templecompute.com/docs/sdk/i18n).
 
 ---
 

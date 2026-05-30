@@ -1,7 +1,11 @@
-# Copyright (C) 2026 YOUR_ORGANIZATION_NAME
-# Licensed under the MIT License. See LICENSE for details.
+#
+# horus_docker
+# Copyright (c) 2026 Temple Compute
+#
+# MIT License
+#
 """
-Shared pytest configuration and fixtures for my_plugin tests.
+Shared pytest configuration and fixtures for horus_docker tests.
 """
 
 from collections.abc import Generator
@@ -26,7 +30,7 @@ def pytest_configure(config: pytest.Config) -> None:
 @pytest.fixture(scope="session", autouse=True)
 def init_registry() -> None:
     """
-    Load all registered plugins (including my_plugin) once per session.
+    Load all registered plugins (including horus_docker) once per session.
 
     ``AutoRegistry.init_registry()`` discovers every installed package that
     declares a ``horus.*`` entry point and imports its module, triggering
