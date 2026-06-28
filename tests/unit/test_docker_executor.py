@@ -170,14 +170,6 @@ class TestDockerRunCmd:
         assert "--entrypoint" in cmd
         assert "/custom" in cmd
 
-    def test_entrypoint_list_joined(self) -> None:
-        """List entrypoint must be joined into a single --entrypoint value."""
-        cmd = DockerExecutor(
-            image=_IMAGE, entrypoint=["/bin/sh", "-c"]
-        )._docker_run_cmd("true")
-        assert "--entrypoint" in cmd
-        assert "/bin/sh -c" in cmd
-
     def test_special_chars_in_command_quoted(self) -> None:
         """Shell metacharacters in the command must be quoted."""
         cmd = DockerExecutor(image=_IMAGE)._docker_run_cmd("echo $HOME && ls")

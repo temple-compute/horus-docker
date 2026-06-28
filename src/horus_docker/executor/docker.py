@@ -69,7 +69,7 @@ class DockerExecutor(BaseExecutor):
     Docker network to attach the container to.
     """
 
-    entrypoint: str | list[str] | None = None
+    entrypoint: str | None = None
     """
     Override for the image's ``ENTRYPOINT`` (``--entrypoint`` flag).
     """
@@ -112,12 +112,7 @@ class DockerExecutor(BaseExecutor):
         if self.network:
             parts += ["--network", shlex.quote(self.network)]
         if self.entrypoint is not None:
-            ep = (
-                self.entrypoint
-                if isinstance(self.entrypoint, str)
-                else " ".join(self.entrypoint)
-            )
-            parts += ["--entrypoint", shlex.quote(ep)]
+            parts += ["--entrypoint", shlex.quote(self.entrypoint)]
         if self.user:
             parts += ["-u", shlex.quote(self.user)]
         parts += [
@@ -204,28 +199,30 @@ class DockerExecutor(BaseExecutor):
         if err:
             horus_logger.log.warning(err)
 
-        if proc.returncode != 0:
-            horus_logger.log.error(
-                _(
-                    "Container for task %(task_id)s exited with code "
-                    "%(code)s. Output: %(out)s"
+        try:
+            if proc.returncode != 0:
+                horus_logger.log.error(
+                    _(
+                        "Container for task %(task_id)s exited with code "
+                        "%(code)s. Output: %(out)s"
+                    )
+                    % {
+                        "task_id": task.id,
+                        "code": proc.returncode,
+                        "out": (out or err).strip(),
+                    }
                 )
-                % {
-                    "task_id": task.id,
-                    "code": proc.returncode,
-                    "out": (out or err).strip(),
-                }
-            )
-            raise TaskExecutionError(
-                _("Container exited with code %(code)s")
-                % {"code": proc.returncode}
-            )
 
-        if self.dockerfile:
-            try:
-                rmi = await task.target.run_command(
-                    f"docker rmi -f {shlex.quote(self.image)}"
+                raise TaskExecutionError(
+                    _("Container exited with code %(code)s")
+                    % {"code": proc.returncode}
                 )
-                await rmi.wait()
-            except Exception:  # pragma: no cover
-                pass
+        finally:
+            if self.dockerfile:
+                try:
+                    rmi = await task.target.run_command(
+                        f"docker rmi -f {shlex.quote(self.image)}"
+                    )
+                    await rmi.wait()
+                except Exception:
+                    pass

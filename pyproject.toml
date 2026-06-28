@@ -112,6 +112,3 @@ convention = "google"
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
-
-[tool.uv.sources]
-horus-runtime = { git = "https://github.com/temple-compute/horus-runtime.git" }
