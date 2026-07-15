@@ -142,7 +142,7 @@ class DockerExecutor(BaseExecutor):
             f" -f {shlex.quote(dockerfile_path)}"
             f" {shlex.quote(str(context))}"
         )
-        proc = await task.target.run_command(build_cmd)
+        proc = await task.target.run_command(build_cmd, detach=False)
         stdout, stderr = await proc.communicate()
         out = stdout.decode(errors="replace").strip() if stdout else ""
         err = stderr.decode(errors="replace").strip() if stderr else ""
@@ -221,7 +221,8 @@ class DockerExecutor(BaseExecutor):
             if self.dockerfile:
                 try:
                     rmi = await task.target.run_command(
-                        f"docker rmi -f {shlex.quote(self.image)}"
+                        f"docker rmi -f {shlex.quote(self.image)}",
+                        detach=False,
                     )
                     await rmi.wait()
                 except Exception:
