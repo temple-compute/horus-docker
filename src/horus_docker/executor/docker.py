@@ -30,7 +30,7 @@ class DockerExecutor(BaseExecutor):
     Runs the task's command inside a Docker container.
     """
 
-    kind: str = "docker_executor"
+    kind: str = "docker"
     kind_name: ClassVar[str] = "Docker Executor"
     kind_description: ClassVar[str] = _(
         "Executes a command inside a Docker container on the task target."

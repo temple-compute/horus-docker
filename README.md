@@ -42,7 +42,7 @@ pyproject.toml
 
 ## DockerExecutor
 
-Registered under `kind = "docker_executor"`. Only accepted when the task's runtime is a `CommandRuntime`.
+Registered under `kind = "docker"`. Only accepted when the task's runtime is a `CommandRuntime`.
 
 ### Fields
 

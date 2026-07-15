@@ -48,12 +48,12 @@ class TestDockerExecutorRegistration:
 
     def test_registered_under_kind(self) -> None:
         """DockerExecutor must appear in BaseExecutor.registry."""
-        assert "docker_executor" in BaseExecutor.registry
-        assert BaseExecutor.registry["docker_executor"] is DockerExecutor
+        assert "docker" in BaseExecutor.registry
+        assert BaseExecutor.registry["docker"] is DockerExecutor
 
     def test_kind_field(self) -> None:
-        """The kind field must equal 'docker_executor'."""
-        assert DockerExecutor(image=_IMAGE).kind == "docker_executor"
+        """The kind field must equal 'docker'."""
+        assert DockerExecutor(image=_IMAGE).kind == "docker"
 
     def test_runtimes_filter(self) -> None:
         """CommandRuntime must be listed as a supported runtime."""
