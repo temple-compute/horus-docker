@@ -7,9 +7,11 @@
 """Unit tests for DockerExecutor."""
 
 import shlex
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from horus_builtin.artifact.file import FileArtifact
 from horus_builtin.runtime.command import CommandRuntime
 from horus_builtin.task.horus_task import HorusTask
 from horus_runtime.context import HorusContext
@@ -330,6 +332,85 @@ class TestDockerExecutorExecute:
         with patch.object(task, "target", mock_target):
             await executor._execute(task)
         assert mock_target.run_command.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_auto_mounts_artifact_parent_dirs(
+        self, horus_context: HorusContext
+    ) -> None:
+        """
+        Artifact parent dirs must be bind-mounted at the same container path.
+        """
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = HorusTask(
+            id="test-task",
+            name="test_task",
+            executor=executor,
+            runtime=CommandRuntime(command="true"),
+            inputs=[
+                FileArtifact(id="inp", path=Path("/data/results/input.pdb"))
+            ],
+            outputs=[
+                FileArtifact(id="out", path=Path("/data/results/output.pdb"))
+            ],
+        )
+        mock_target = _make_mock_target()
+        with patch.object(task, "target", mock_target):
+            await executor._execute(task)
+        cmd = mock_target.run_command.call_args[0][0]
+        assert "-v" in cmd
+        assert "/data/results:/data/results" in cmd
+
+    @pytest.mark.asyncio
+    async def test_explicit_volumes_override_auto_mounts(
+        self, horus_context: HorusContext
+    ) -> None:
+        """
+        An explicit volume must override the auto-mount for the same host path.
+        """
+        del horus_context
+        executor = DockerExecutor(
+            image=_IMAGE, volumes={"/data/results": "/mnt/custom"}
+        )
+        task = HorusTask(
+            id="test-task",
+            name="test_task",
+            executor=executor,
+            runtime=CommandRuntime(command="true"),
+            inputs=[
+                FileArtifact(id="inp", path=Path("/data/results/input.pdb"))
+            ],
+            outputs=[],
+        )
+        mock_target = _make_mock_target()
+        with patch.object(task, "target", mock_target):
+            await executor._execute(task)
+        cmd = mock_target.run_command.call_args[0][0]
+        assert "/data/results:/mnt/custom" in cmd
+        assert "/data/results:/data/results" not in cmd
+
+    @pytest.mark.asyncio
+    async def test_shared_parent_dir_mounted_once(
+        self, horus_context: HorusContext
+    ) -> None:
+        """
+        Two artifacts sharing a parent dir must produce exactly one -v flag.
+        """
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = HorusTask(
+            id="test-task",
+            name="test_task",
+            executor=executor,
+            runtime=CommandRuntime(command="true"),
+            inputs=[FileArtifact(id="a", path=Path("/shared/a.pdb"))],
+            outputs=[FileArtifact(id="b", path=Path("/shared/b.pdb"))],
+        )
+        mock_target = _make_mock_target()
+        with patch.object(task, "target", mock_target):
+            await executor._execute(task)
+        cmd = mock_target.run_command.call_args[0][0]
+        assert cmd.count("/shared:/shared") == 1
 
     @pytest.mark.asyncio
     async def test_execute_rmi_failure_does_not_raise(

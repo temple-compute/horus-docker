@@ -96,14 +96,24 @@ class DockerExecutor(BaseExecutor):
     ``task.working_dir`` when :attr:`dockerfile` is set.
     """
 
-    def _docker_run_cmd(self, prepared_command: str) -> str:
+    def _docker_run_cmd(
+        self, prepared_command: str, task: "BaseTask | None" = None
+    ) -> str:
         """Return the full ``docker run`` CLI command string."""
+        # ponytail: auto-mount artifact parent dirs; explicit volumes win
+        auto_mounts: dict[str, str] = {}
+        if task is not None:
+            for artifact in (*task.inputs, *task.outputs):
+                host_dir = str(artifact.path.parent)
+                auto_mounts[host_dir] = host_dir
+        merged_volumes = {**auto_mounts, **self.volumes}
+
         parts = ["docker", "run"]
         if self.auto_remove:
             parts.append("--rm")
         for k, v in self.env.items():
             parts += ["-e", shlex.quote(f"{k}={v}")]
-        for host, container in self.volumes.items():
+        for host, container in merged_volumes.items():
             parts += ["-v", shlex.quote(f"{host}:{container}")]
         for host_p, cont_p in self.ports.items():
             parts += ["-p", shlex.quote(f"{host_p}:{cont_p}")]
@@ -170,7 +180,7 @@ class DockerExecutor(BaseExecutor):
         if self.dockerfile:
             await self._build_image(task)
 
-        run_cmd = self._docker_run_cmd(prepared_command)
+        run_cmd = self._docker_run_cmd(prepared_command, task)
         horus_logger.log.debug(
             _(
                 "Running task %(task_id)s in Docker image %(image)s: "
