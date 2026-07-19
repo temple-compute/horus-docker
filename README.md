@@ -74,7 +74,7 @@ Registered under `kind = "docker"`. Only accepted when the task's runtime is a `
 
 - Python ≥ 3.13
 - Docker daemon accessible from the host
-- `horus-runtime` ≥ 0.1.1 (install from source or PyPI)
+- `horus-runtime` ≥ 0.2.0 (install from source or PyPI)
 
 ### Setup
 

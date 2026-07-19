@@ -17,7 +17,7 @@ from horus_builtin.runtime.substitution import substitute
 from horus_runtime.core.executor.base import BaseExecutor, RuntimeFilterType
 from horus_runtime.core.task.exceptions import TaskExecutionError
 from horus_runtime.logging import horus_logger
-from pydantic import Field
+from pydantic import Field, PrivateAttr
 
 from horus_docker.i18n import tr as _
 
@@ -96,14 +96,32 @@ class DockerExecutor(BaseExecutor):
     ``task.working_dir`` when :attr:`dockerfile` is set.
     """
 
-    def _docker_run_cmd(self, prepared_command: str) -> str:
+    _container_name: str | None = PrivateAttr(default=None)
+    """
+    Predictable container name assigned at execute-time so
+    :meth:`cancel_execution` can stop it by name.
+    """
+
+    def _docker_run_cmd(
+        self, prepared_command: str, task: "BaseTask | None" = None
+    ) -> str:
         """Return the full ``docker run`` CLI command string."""
+        # ponytail: auto-mount artifact parent dirs; explicit volumes win
+        auto_mounts: dict[str, str] = {}
+        if task is not None:
+            for artifact in (*task.inputs, *task.outputs):
+                host_dir = str(artifact.path.parent)
+                auto_mounts[host_dir] = host_dir
+        merged_volumes = {**auto_mounts, **self.volumes}
+
         parts = ["docker", "run"]
         if self.auto_remove:
             parts.append("--rm")
+        if self._container_name is not None:
+            parts += ["--name", self._container_name]
         for k, v in self.env.items():
             parts += ["-e", shlex.quote(f"{k}={v}")]
-        for host, container in self.volumes.items():
+        for host, container in merged_volumes.items():
             parts += ["-v", shlex.quote(f"{host}:{container}")]
         for host_p, cont_p in self.ports.items():
             parts += ["-p", shlex.quote(f"{host_p}:{cont_p}")]
@@ -170,7 +188,8 @@ class DockerExecutor(BaseExecutor):
         if self.dockerfile:
             await self._build_image(task)
 
-        run_cmd = self._docker_run_cmd(prepared_command)
+        self._container_name = f"horus-{task.id}"
+        run_cmd = self._docker_run_cmd(prepared_command, task)
         horus_logger.log.debug(
             _(
                 "Running task %(task_id)s in Docker image %(image)s: "
@@ -218,6 +237,7 @@ class DockerExecutor(BaseExecutor):
                     % {"code": proc.returncode}
                 )
         finally:
+            self._container_name = None
             if self.dockerfile:
                 try:
                     rmi = await task.target.run_command(
@@ -226,3 +246,23 @@ class DockerExecutor(BaseExecutor):
                     await rmi.wait()
                 except Exception:
                     pass
+
+    async def cancel_execution(self) -> None:
+        """Stop the running container so it does not become orphaned.
+
+        Called by ``BaseTarget.cancel()`` before ``CancelledError`` is
+        injected.  If no container is currently running (e.g. the task
+        finished before the cancel arrived) this is a safe no-op.
+        """
+        if self._container_name is None:
+            return
+        name = self._container_name
+        self._container_name = None  # clear before stop — idempotent
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "stop",
+            name,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
