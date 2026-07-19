@@ -17,7 +17,7 @@ from horus_builtin.runtime.substitution import substitute
 from horus_runtime.core.executor.base import BaseExecutor, RuntimeFilterType
 from horus_runtime.core.task.exceptions import TaskExecutionError
 from horus_runtime.logging import horus_logger
-from pydantic import Field
+from pydantic import Field, PrivateAttr
 
 from horus_docker.i18n import tr as _
 
@@ -96,6 +96,12 @@ class DockerExecutor(BaseExecutor):
     ``task.working_dir`` when :attr:`dockerfile` is set.
     """
 
+    _container_name: str | None = PrivateAttr(default=None)
+    """
+    Predictable container name assigned at execute-time so
+    :meth:`cancel_execution` can stop it by name.
+    """
+
     def _docker_run_cmd(
         self, prepared_command: str, task: "BaseTask | None" = None
     ) -> str:
@@ -111,6 +117,8 @@ class DockerExecutor(BaseExecutor):
         parts = ["docker", "run"]
         if self.auto_remove:
             parts.append("--rm")
+        if self._container_name is not None:
+            parts += ["--name", self._container_name]
         for k, v in self.env.items():
             parts += ["-e", shlex.quote(f"{k}={v}")]
         for host, container in merged_volumes.items():
@@ -180,6 +188,7 @@ class DockerExecutor(BaseExecutor):
         if self.dockerfile:
             await self._build_image(task)
 
+        self._container_name = f"horus-{task.id}"
         run_cmd = self._docker_run_cmd(prepared_command, task)
         horus_logger.log.debug(
             _(
@@ -228,6 +237,7 @@ class DockerExecutor(BaseExecutor):
                     % {"code": proc.returncode}
                 )
         finally:
+            self._container_name = None
             if self.dockerfile:
                 try:
                     rmi = await task.target.run_command(
@@ -236,3 +246,23 @@ class DockerExecutor(BaseExecutor):
                     await rmi.wait()
                 except Exception:
                     pass
+
+    async def cancel_execution(self) -> None:
+        """Stop the running container so it does not become orphaned.
+
+        Called by ``BaseTarget.cancel()`` before ``CancelledError`` is
+        injected.  If no container is currently running (e.g. the task
+        finished before the cancel arrived) this is a safe no-op.
+        """
+        if self._container_name is None:
+            return
+        name = self._container_name
+        self._container_name = None  # clear before stop — idempotent
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "stop",
+            name,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
