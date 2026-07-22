@@ -79,6 +79,12 @@ class DockerExecutor(BaseExecutor):
     User (``name``, ``uid``, or ``uid:gid``) to run the command as.
     """
 
+    gpus: str | None = None
+    """
+    Value passed to ``docker run --gpus`` (e.g. ``all``, ``device=0``).
+    Requires the NVIDIA Container Toolkit on the target.
+    """
+
     auto_remove: bool = True
     """
     Add ``--rm`` so the container is removed when it exits.
@@ -119,6 +125,8 @@ class DockerExecutor(BaseExecutor):
             parts.append("--rm")
         if self._container_name is not None:
             parts += ["--name", self._container_name]
+        if self.gpus:
+            parts += ["--gpus", shlex.quote(self.gpus)]
         for k, v in self.env.items():
             parts += ["-e", shlex.quote(f"{k}={v}")]
         for host, container in merged_volumes.items():

@@ -172,6 +172,17 @@ class TestDockerRunCmd:
         assert "--entrypoint" in cmd
         assert "/custom" in cmd
 
+    def test_gpus_included(self) -> None:
+        """--gpus flag must appear when gpus is set."""
+        cmd = DockerExecutor(image=_IMAGE, gpus="all")._docker_run_cmd("true")
+        assert "--gpus" in cmd
+        assert "all" in cmd
+
+    def test_gpus_default_omits_flag(self) -> None:
+        """--gpus flag must be absent when gpus is unset."""
+        cmd = DockerExecutor(image=_IMAGE)._docker_run_cmd("true")
+        assert "--gpus" not in cmd
+
     def test_special_chars_in_command_quoted(self) -> None:
         """Shell metacharacters in the command must be quoted."""
         cmd = DockerExecutor(image=_IMAGE)._docker_run_cmd("echo $HOME && ls")

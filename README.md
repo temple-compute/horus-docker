@@ -52,6 +52,7 @@ Registered under `kind = "docker"`. Only accepted when the task's runtime is a `
 | `env` | `dict[str, str]` | `{}` | Environment variables passed into the container |
 | `volumes` | `dict[str, str]` | `{}` | Bind mounts as `host_path → container_path` (read-write) |
 | `ports` | `dict[str, str]` | `{}` | Port mappings as `host_port → container_port` |
+| `gpus` | `str \| None` | `None` | Value for `docker run --gpus` (e.g. `all`, `device=0`); needs the NVIDIA Container Toolkit |
 | `working_dir` | `str \| None` | `None` | Working directory inside the container |
 | `network` | `str \| None` | `None` | Docker network to attach the container to |
 | `entrypoint` | `str \| list[str] \| None` | `None` | Override the image's `ENTRYPOINT` |
