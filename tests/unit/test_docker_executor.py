@@ -41,6 +41,10 @@ def _make_mock_target(proc: AsyncMock | None = None) -> MagicMock:
     target.run_command = AsyncMock(return_value=proc or _make_mock_proc())
     target.put_file = AsyncMock()
     target.mkdir = AsyncMock()
+    # Mirror LocalTarget.path_on_target so `${id}` substitution (used by
+    # explicit volumes/env/working_dir tests) resolves to the artifact's real
+    # path instead of a MagicMock repr.
+    target.path_on_target = lambda artifact: str(artifact.path)
     return target
 
 
@@ -399,6 +403,107 @@ class TestDockerExecutorExecute:
         cmd = mock_target.run_command.call_args[0][0]
         assert "/data/results:/mnt/custom" in cmd
         assert "/data/results:/data/results" not in cmd
+
+    @pytest.mark.asyncio
+    async def test_explicit_volume_substitutes_artifact_placeholder(
+        self, horus_context: HorusContext
+    ) -> None:
+        """
+        `${id}` in an explicit volume (either side) must resolve to the
+        artifact's host path, not be passed through literally.
+        """
+        del horus_context
+        executor = DockerExecutor(
+            image=_IMAGE, volumes={"${inp}": "/data/protein.pdb"}
+        )
+        task = HorusTask(
+            id="test-task",
+            name="test_task",
+            executor=executor,
+            runtime=CommandRuntime(command="true"),
+            inputs=[
+                FileArtifact(id="inp", path=Path("/data/results/input.pdb"))
+            ],
+            outputs=[],
+        )
+        mock_target = _make_mock_target()
+        with patch.object(task, "target", mock_target):
+            await executor._execute(task)
+        cmd = mock_target.run_command.call_args[0][0]
+        assert "/data/results/input.pdb:/data/protein.pdb" in cmd
+        assert "${inp}" not in cmd
+
+    @pytest.mark.asyncio
+    async def test_env_value_substitutes_artifact_placeholder(
+        self, horus_context: HorusContext
+    ) -> None:
+        """`${id}` in an env value must resolve to the artifact's host path."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE, env={"PROTEIN_PATH": "${inp}"})
+        task = HorusTask(
+            id="test-task",
+            name="test_task",
+            executor=executor,
+            runtime=CommandRuntime(command="true"),
+            inputs=[FileArtifact(id="inp", path=Path("/data/input.pdb"))],
+            outputs=[],
+        )
+        mock_target = _make_mock_target()
+        with patch.object(task, "target", mock_target):
+            await executor._execute(task)
+        cmd = mock_target.run_command.call_args[0][0]
+        assert "PROTEIN_PATH=/data/input.pdb" in cmd
+
+    @pytest.mark.asyncio
+    async def test_working_dir_substitutes_artifact_placeholder(
+        self, horus_context: HorusContext
+    ) -> None:
+        """`${id}` in working_dir must resolve to the artifact's host path."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE, working_dir="${inp}")
+        task = HorusTask(
+            id="test-task",
+            name="test_task",
+            executor=executor,
+            runtime=CommandRuntime(command="true"),
+            inputs=[FileArtifact(id="inp", path=Path("/data/input.pdb"))],
+            outputs=[],
+        )
+        mock_target = _make_mock_target()
+        with patch.object(task, "target", mock_target):
+            await executor._execute(task)
+        cmd = mock_target.run_command.call_args[0][0]
+        assert "-w /data/input.pdb" in cmd
+
+    def test_docker_run_cmd_without_task_leaves_placeholders_literal(
+        self,
+    ) -> None:
+        """
+        Calling `_docker_run_cmd` directly (no task) must not attempt
+        substitution — existing callers that pass literal values are
+        unaffected.
+        """
+        cmd = DockerExecutor(
+            image=_IMAGE, volumes={"${inp}": "/data/protein.pdb"}
+        )._docker_run_cmd("true")
+        assert "${inp}:/data/protein.pdb" in cmd
+
+    def test_unknown_placeholder_left_as_is(
+        self, horus_context: HorusContext
+    ) -> None:
+        """An unresolvable `${id}` must be left untouched (safe_substitute)."""
+        del horus_context
+        executor = DockerExecutor(
+            image=_IMAGE, volumes={"${nonexistent}": "/mnt/data"}
+        )
+        task = HorusTask(
+            id="test-task",
+            name="test_task",
+            executor=executor,
+            runtime=CommandRuntime(command="true"),
+        )
+        cmd = executor._docker_run_cmd("true", task)
+        assert "${nonexistent}:/mnt/data" in cmd
 
     @pytest.mark.asyncio
     async def test_shared_parent_dir_mounted_once(

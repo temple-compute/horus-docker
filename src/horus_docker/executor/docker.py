@@ -47,11 +47,28 @@ class DockerExecutor(BaseExecutor):
     env: dict[str, str] = Field(default_factory=dict)
     """
     Environment variables to set inside the container, as ``NAME -> value``.
+    Keys and values support ``$id`` / ``${id}`` / ``${id.attr}`` /
+    ``${task.attr}`` artifact substitution (see :attr:`volumes`).
     """
 
     volumes: dict[str, str] = Field(default_factory=dict)
     """
     Bind mounts as ``host_path -> container_path`` (read-write).
+
+    Both sides support ``$id`` / ``${id}`` / ``${id.attr}`` / ``${task.attr}``
+    placeholders, resolved the same way a ``command`` string is (see
+    :mod:`horus_builtin.runtime.substitution`) — ``$id`` renders to the
+    artifact's absolute path on the task's target. This lets an explicit
+    mount reference a task's own input/output paths, e.g.::
+
+        volumes:
+          "${protein}": /data/protein.pdb
+
+    mounts the ``protein`` artifact's host path at a fixed, host-independent
+    path inside the container, so the command doesn't need to know the host
+    layout. Unknown placeholders are left as-is. Explicit entries here take
+    precedence over the auto-mounted artifact parent dirs (see
+    :meth:`_docker_run_cmd`).
     """
 
     ports: dict[str, str] = Field(default_factory=dict)
@@ -61,7 +78,8 @@ class DockerExecutor(BaseExecutor):
 
     working_dir: str | None = None
     """
-    Working directory inside the container (``-w`` flag).
+    Working directory inside the container (``-w`` flag). Supports artifact
+    substitution, see :attr:`volumes`.
     """
 
     network: str | None = None
@@ -71,7 +89,8 @@ class DockerExecutor(BaseExecutor):
 
     entrypoint: str | None = None
     """
-    Override for the image's ``ENTRYPOINT`` (``--entrypoint`` flag).
+    Override for the image's ``ENTRYPOINT`` (``--entrypoint`` flag). Supports
+    artifact substitution, see :attr:`volumes`.
     """
 
     user: str | None = None
@@ -108,6 +127,20 @@ class DockerExecutor(BaseExecutor):
     :meth:`cancel_execution` can stop it by name.
     """
 
+    @staticmethod
+    def _sub(value: str, task: "BaseTask | None") -> str:
+        """Render ``$``/``${}`` artifact placeholders in *value*."""
+        return substitute(value, task) if task is not None else value
+
+    @classmethod
+    def _sub_dict(
+        cls, mapping: dict[str, str], task: "BaseTask | None"
+    ) -> dict[str, str]:
+        """Apply :meth:`_sub` to every key and value of *mapping*."""
+        return {
+            cls._sub(k, task): cls._sub(v, task) for k, v in mapping.items()
+        }
+
     def _docker_run_cmd(
         self, prepared_command: str, task: "BaseTask | None" = None
     ) -> str:
@@ -118,7 +151,18 @@ class DockerExecutor(BaseExecutor):
             for artifact in (*task.inputs, *task.outputs):
                 host_dir = str(artifact.path.parent)
                 auto_mounts[host_dir] = host_dir
-        merged_volumes = {**auto_mounts, **self.volumes}
+        explicit_volumes = self._sub_dict(self.volumes, task)
+        merged_volumes = {**auto_mounts, **explicit_volumes}
+        env = self._sub_dict(self.env, task)
+        working_dir = (
+            self._sub(self.working_dir, task) if self.working_dir else None
+        )
+        entrypoint = (
+            self._sub(self.entrypoint, task)
+            if self.entrypoint is not None
+            else None
+        )
+        user = self._sub(self.user, task) if self.user else None
 
         parts = ["docker", "run"]
         if self.auto_remove:
@@ -127,20 +171,20 @@ class DockerExecutor(BaseExecutor):
             parts += ["--name", self._container_name]
         if self.gpus:
             parts += ["--gpus", shlex.quote(self.gpus)]
-        for k, v in self.env.items():
+        for k, v in env.items():
             parts += ["-e", shlex.quote(f"{k}={v}")]
         for host, container in merged_volumes.items():
             parts += ["-v", shlex.quote(f"{host}:{container}")]
         for host_p, cont_p in self.ports.items():
             parts += ["-p", shlex.quote(f"{host_p}:{cont_p}")]
-        if self.working_dir:
-            parts += ["-w", shlex.quote(self.working_dir)]
+        if working_dir:
+            parts += ["-w", shlex.quote(working_dir)]
         if self.network:
             parts += ["--network", shlex.quote(self.network)]
-        if self.entrypoint is not None:
-            parts += ["--entrypoint", shlex.quote(self.entrypoint)]
-        if self.user:
-            parts += ["-u", shlex.quote(self.user)]
+        if entrypoint is not None:
+            parts += ["--entrypoint", shlex.quote(entrypoint)]
+        if user:
+            parts += ["-u", shlex.quote(user)]
         parts += [
             shlex.quote(self.image),
             "/bin/sh",
