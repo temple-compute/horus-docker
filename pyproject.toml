@@ -1,6 +1,5 @@
 [project]
 name = "horus_docker"
-version = "0.0.1"
 description = "A custom plugin for the Horus runtime, providing additional functionality and integrations."
 requires-python = ">=3.13"
 classifiers = [
@@ -8,6 +7,7 @@ classifiers = [
   "Programming Language :: Python :: 3",
 ]
 dependencies = ["horus-runtime>=0.2.0"]
+dynamic = ["version"]
 
 # ================
 # Plugin entry-points
@@ -28,10 +28,11 @@ dev = [
   "pytest-cov~=7.0",
   "ruff~=0.15",
   "types-PyYAML~=6.0",
+  "uv-dynamic-versioning>=0.14.0",
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.29,<2.0", "uv-dynamic-versioning>=0.14.0,<1.0"]
 build-backend = "hatchling.build"
 
 [tool.coverage.run]
@@ -39,6 +40,9 @@ source = ["horus_docker"]
 
 [tool.coverage.report]
 omit = ["tests/*"]
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
 
 [tool.hatch.build]
 artifacts = ["src/horus_docker/locale/**/LC_MESSAGES/*.mo"]
@@ -112,3 +116,6 @@ convention = "google"
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[tool.uv-dynamic-versioning]
+fallback-version = "0.0.1"
