@@ -175,7 +175,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "horus-runtime", specifier = ">=0.2.0" }]
+requires-dist = [{ name = "horus-runtime", git = "https://github.com/temple-compute/horus-runtime?rev=353eb7779d731e11d37488819e59fa978d706a95" }]
 
 [package.metadata.requires-dev]
 dev = [
@@ -193,8 +193,8 @@ dev = [
 
 [[package]]
 name = "horus-runtime"
-version = "0.2.1"
-source = { registry = "https://pypi.org/simple" }
+version = "0.2.2.post1.dev0+353eb77"
+source = { git = "https://github.com/temple-compute/horus-runtime?rev=353eb7779d731e11d37488819e59fa978d706a95#353eb7779d731e11d37488819e59fa978d706a95" }
 dependencies = [
     { name = "click" },
     { name = "loguru" },
@@ -202,10 +202,6 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "pyyaml" },
     { name = "rich" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/64/42/2bd2e4d3a7f15ffb68c217ce3aa36e50a9eacfd27ed57d44342d43632d40/horus_runtime-0.2.1.tar.gz", hash = "sha256:7bfe9e7b79fcacaf8ef20c9038cb87eea3c868085de3c073e4538ddf101d3c6c", size = 248077, upload-time = "2026-07-21T21:30:45.157Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ea/a6/722a24d5a7339a139e8efed5fb51ed8f3e67ba23ff0c36105d590ce01040/horus_runtime-0.2.1-py3-none-any.whl", hash = "sha256:603424c7891c176b1278a9d3a3d94f102242be82ce303c66493186f374cc82ed", size = 253304, upload-time = "2026-07-21T21:30:43.977Z" },
 ]
 
 [[package]]

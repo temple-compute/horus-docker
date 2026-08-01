@@ -17,6 +17,12 @@ docker = "horus_docker.executor.docker"
 
 # ================
 
+# TEMPORARY: pins the unmerged branch that introduces ResourceScope /
+# ContainerScope. Repoint at a released horus-runtime (and bump the
+# dependency specifier above) before this branch is merged.
+[tool.uv.sources]
+horus-runtime = { git = "https://github.com/temple-compute/horus-runtime", rev = "353eb7779d731e11d37488819e59fa978d706a95" }
+
 [dependency-groups]
 dev = [
   "babel~=2.0",
