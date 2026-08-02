@@ -17,8 +17,10 @@ from horus_builtin.task.horus_task import HorusTask
 from horus_runtime.context import HorusContext
 from horus_runtime.core.executor.base import BaseExecutor
 from horus_runtime.core.task.exceptions import TaskExecutionError
+from horus_runtime.settings import runtime_settings
 
 from horus_docker.executor.docker import DockerExecutor
+from horus_docker.executor.resources import ContainerScope
 
 _IMAGE = "python:3.13-slim"
 _NONZERO_CODE = 2
@@ -41,6 +43,8 @@ def _make_mock_target(proc: AsyncMock | None = None) -> MagicMock:
     target.run_command = AsyncMock(return_value=proc or _make_mock_proc())
     target.put_file = AsyncMock()
     target.mkdir = AsyncMock()
+    target.remove = AsyncMock()
+    target.get_file = AsyncMock(return_value=b"deadbeef\n")
     # Mirror LocalTarget.path_on_target so `${id}` substitution (used by
     # explicit volumes/env/working_dir tests) resolves to the artifact's real
     # path instead of a MagicMock repr.
@@ -551,5 +555,151 @@ class TestDockerExecutorExecute:
         mock_target.run_command = _run_command
         mock_target.put_file = AsyncMock()
         mock_target.mkdir = AsyncMock()
+        mock_target.remove = AsyncMock()
         with patch.object(task, "target", mock_target):
             await executor._execute(task)  # must not raise
+
+
+@pytest.mark.unit
+class TestContainerScope:
+    """
+    Verify the container is identifiable so an observer can measure it.
+    """
+
+    def _make_task(self, executor: DockerExecutor) -> HorusTask:
+        return HorusTask(
+            id="scope-task",
+            name="scope_task",
+            executor=executor,
+            runtime=CommandRuntime(command="echo hello"),
+        )
+
+    def test_run_cmd_emits_cidfile(self, horus_context: HorusContext) -> None:
+        """The run command must ask docker to record the container id."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = self._make_task(executor)
+        parts = shlex.split(executor._docker_run_cmd("echo hello", task))
+
+        assert "--cidfile" in parts
+        cidfile = parts[parts.index("--cidfile") + 1]
+        assert cidfile == executor._cidfile_path(task)
+        assert cidfile.endswith("/.horus_container_id")
+        # still a well-formed `docker run ... <image> /bin/sh -c <cmd>`
+        assert parts[:2] == ["docker", "run"]
+        assert parts[-4:] == [_IMAGE, "/bin/sh", "-c", "echo hello"]
+
+    def test_run_cmd_without_task_omits_cidfile(self) -> None:
+        """Without a task there is no working dir to write the id to."""
+        cmd = DockerExecutor(image=_IMAGE)._docker_run_cmd("echo hello")
+        assert "--cidfile" not in cmd
+
+    @pytest.mark.asyncio
+    async def test_execute_removes_stale_cidfile(
+        self, horus_context: HorusContext
+    ) -> None:
+        """Docker refuses to start when the cidfile already exists."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = self._make_task(executor)
+        mock_target = _make_mock_target()
+        with patch.object(task, "target", mock_target):
+            await executor._execute(task)
+            mock_target.remove.assert_awaited_once_with(
+                executor._cidfile_path(task)
+            )
+
+    @pytest.mark.asyncio
+    async def test_resource_scope_is_a_container(
+        self, horus_context: HorusContext
+    ) -> None:
+        """The scope must point at the container, never the CLI process."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = self._make_task(executor)
+        mock_target = _make_mock_target()
+        with patch.object(task, "target", mock_target):
+            scope = await executor.resource_scope(task, _make_mock_proc())
+            expected_cidfile = executor._cidfile_path(task)
+
+        assert isinstance(scope, ContainerScope)
+        assert scope.kind == "container"
+        assert scope.cidfile == expected_cidfile
+        assert scope.container_id == "deadbeef"
+
+    @pytest.mark.asyncio
+    async def test_resource_scope_survives_unreadable_cidfile(
+        self, horus_context: HorusContext
+    ) -> None:
+        """Measurement must never fail a task, even with no id available."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = self._make_task(executor)
+        mock_target = _make_mock_target()
+        mock_target.get_file = AsyncMock(side_effect=OSError("not there"))
+        with patch.object(task, "target", mock_target):
+            scope = await executor.resource_scope(task)
+            expected_cidfile = executor._cidfile_path(task)
+
+        assert isinstance(scope, ContainerScope)
+        assert scope.container_id is None
+        assert scope.cidfile == expected_cidfile
+
+
+@pytest.mark.unit
+class TestSideArtifactsDir:
+    """
+    Verify the side-artifacts directory reaches the container.
+    """
+
+    def _make_task(self, executor: DockerExecutor) -> HorusTask:
+        return HorusTask(
+            id="side-task",
+            name="side_task",
+            executor=executor,
+            runtime=CommandRuntime(command="echo hello"),
+        )
+
+    def test_run_cmd_mounts_and_exports_side_dir(
+        self, horus_context: HorusContext
+    ) -> None:
+        """The dir must be bind-mounted and exported under the same path."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = self._make_task(executor)
+        side = task.side_artifacts_dir
+        parts = shlex.split(executor._docker_run_cmd("echo hello", task))
+
+        assert f"{side}:{side}" in parts
+        assert f"{runtime_settings.SIDE_ARTIFACTS_DIR_ENV}={side}" in parts
+
+    def test_explicit_env_wins(self, horus_context: HorusContext) -> None:
+        """An explicit env entry must not be clobbered by the default."""
+        del horus_context
+        executor = DockerExecutor(
+            image=_IMAGE,
+            env={runtime_settings.SIDE_ARTIFACTS_DIR_ENV: "/custom"},
+        )
+        task = self._make_task(executor)
+        parts = shlex.split(executor._docker_run_cmd("echo hello", task))
+
+        assert f"{runtime_settings.SIDE_ARTIFACTS_DIR_ENV}=/custom" in parts
+
+    @pytest.mark.asyncio
+    async def test_execute_forwards_env_to_run_command(
+        self, horus_context: HorusContext
+    ) -> None:
+        """The target channel gets the env the other executors set too."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = self._make_task(executor)
+        mock_target = _make_mock_target()
+        with patch.object(task, "target", mock_target):
+            await executor._execute(task)
+            expected = {
+                runtime_settings.SIDE_ARTIFACTS_DIR_ENV: (
+                    task.side_artifacts_dir
+                )
+            }
+
+        assert mock_target.run_command.call_args.kwargs["env"] == expected

@@ -6,7 +6,7 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
 ]
-dependencies = ["horus-runtime>=0.2.0"]
+dependencies = ["horus-runtime>=0.3.0"]
 dynamic = ["version"]
 
 # ================
@@ -15,11 +15,22 @@ dynamic = ["version"]
 [project.entry-points."horus.executor"]
 docker = "horus_docker.executor.docker"
 
+# The container probe (horus_docker.probe) needs horus-resource-monitor's
+# probe classes to import. Without this extra, that entry point just fails
+# to load and is skipped (see AutoRegistry.init_registry) - the docker
+# executor still works, it just isn't probed for resource usage.
+[project.optional-dependencies]
+resource-monitor = ["horus-resource-monitor"]
+
+[project.entry-points."horus.resource_probe"]
+container = "horus_docker.probe"
+
 # ================
 
 [dependency-groups]
 dev = [
   "babel~=2.0",
+  "horus_docker[resource-monitor]",
   "licenseheaders~=0.8",
   "mypy~=1.19",
   "pre_commit~=4.0",
@@ -119,3 +130,6 @@ indent-style = "space"
 
 [tool.uv-dynamic-versioning]
 fallback-version = "0.0.1"
+
+[tool.uv.sources]
+horus-resource-monitor = { git = "https://github.com/temple-compute/horus-resource-monitor" }

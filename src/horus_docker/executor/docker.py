@@ -10,19 +10,31 @@ Docker executor implementation for Horus.
 
 import asyncio
 import shlex
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from horus_builtin.runtime.command import CommandRuntime
 from horus_builtin.runtime.substitution import substitute
 from horus_runtime.core.executor.base import BaseExecutor, RuntimeFilterType
+from horus_runtime.core.resources import ResourceScope
 from horus_runtime.core.task.exceptions import TaskExecutionError
 from horus_runtime.logging import horus_logger
+from horus_runtime.settings import runtime_settings
 from pydantic import Field, PrivateAttr
 
+from horus_docker.executor.resources import ContainerScope
 from horus_docker.i18n import tr as _
 
 if TYPE_CHECKING:
+    from horus_runtime.core.target.base import BaseTarget
+    from horus_runtime.core.target.channel import ChannelProcess
     from horus_runtime.core.task.base import BaseTask
+
+CIDFILE_NAME = ".horus_container_id"
+"""
+Name of the file, under the task's working directory, that ``docker run``
+writes the started container's id to.
+"""
 
 
 class DockerExecutor(BaseExecutor):
@@ -127,6 +139,17 @@ class DockerExecutor(BaseExecutor):
     :meth:`cancel_execution` can stop it by name.
     """
 
+    _target: "BaseTarget | None" = PrivateAttr(default=None)
+    """
+    Target the container was started on, so :meth:`cancel_execution` stops it
+    where it actually runs instead of on the orchestrator's host.
+    """
+
+    @staticmethod
+    def _cidfile_path(task: "BaseTask") -> str:
+        """Path on the target where ``docker run`` writes the container id."""
+        return (Path(task.working_dir) / CIDFILE_NAME).as_posix()
+
     @staticmethod
     def _sub(value: str, task: "BaseTask | None") -> str:
         """Render ``$``/``${}`` artifact placeholders in *value*."""
@@ -141,19 +164,31 @@ class DockerExecutor(BaseExecutor):
             cls._sub(k, task): cls._sub(v, task) for k, v in mapping.items()
         }
 
-    def _docker_run_cmd(
-        self, prepared_command: str, task: "BaseTask | None" = None
-    ) -> str:
-        """Return the full ``docker run`` CLI command string."""
+    def _volumes_and_env(
+        self, task: "BaseTask | None"
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Return the bind mounts and container environment for *task*."""
         # ponytail: auto-mount artifact parent dirs; explicit volumes win
         auto_mounts: dict[str, str] = {}
+        env = self._sub_dict(self.env, task)
         if task is not None:
             for artifact in (*task.inputs, *task.outputs):
                 host_dir = str(artifact.path.parent)
                 auto_mounts[host_dir] = host_dir
+            # The container is a different filesystem: the side-artifacts
+            # directory the runtime collects from must be reachable at the
+            # same path inside it, or scripts write into a throwaway layer.
+            side_dir = task.side_artifacts_dir
+            auto_mounts[side_dir] = side_dir
+            env.setdefault(runtime_settings.SIDE_ARTIFACTS_DIR_ENV, side_dir)
         explicit_volumes = self._sub_dict(self.volumes, task)
-        merged_volumes = {**auto_mounts, **explicit_volumes}
-        env = self._sub_dict(self.env, task)
+        return {**auto_mounts, **explicit_volumes}, env
+
+    def _docker_run_cmd(
+        self, prepared_command: str, task: "BaseTask | None" = None
+    ) -> str:
+        """Return the full ``docker run`` CLI command string."""
+        merged_volumes, env = self._volumes_and_env(task)
         working_dir = (
             self._sub(self.working_dir, task) if self.working_dir else None
         )
@@ -169,6 +204,11 @@ class DockerExecutor(BaseExecutor):
             parts.append("--rm")
         if self._container_name is not None:
             parts += ["--name", self._container_name]
+        if task is not None:
+            # --cidfile is the CLI's own contract for "tell me which container
+            # you started"; an observer needs the id because the workload runs
+            # under the daemon, not under this client process.
+            parts += ["--cidfile", shlex.quote(self._cidfile_path(task))]
         if self.gpus:
             parts += ["--gpus", shlex.quote(self.gpus)]
         for k, v in env.items():
@@ -241,6 +281,10 @@ class DockerExecutor(BaseExecutor):
             await self._build_image(task)
 
         self._container_name = f"horus-{task.id}"
+        self._target = task.target
+        # docker refuses to start when the cidfile already exists, so a stale
+        # one from a previous run of this task would wedge it forever.
+        await task.target.remove(self._cidfile_path(task))
         run_cmd = self._docker_run_cmd(prepared_command, task)
         horus_logger.log.debug(
             _(
@@ -254,7 +298,15 @@ class DockerExecutor(BaseExecutor):
             }
         )
 
-        proc = await task.target.run_command(run_cmd, cwd=task.working_dir)
+        proc = await task.target.run_command(
+            run_cmd,
+            cwd=task.working_dir,
+            env={
+                runtime_settings.SIDE_ARTIFACTS_DIR_ENV: (
+                    task.side_artifacts_dir
+                )
+            },
+        )
 
         try:
             stdout, stderr = await proc.communicate()
@@ -290,6 +342,7 @@ class DockerExecutor(BaseExecutor):
                 )
         finally:
             self._container_name = None
+            self._target = None
             if self.dockerfile:
                 try:
                     rmi = await task.target.run_command(
@@ -299,6 +352,36 @@ class DockerExecutor(BaseExecutor):
                 except Exception:
                     pass
 
+    async def resource_scope(
+        self, task: "BaseTask", process: "ChannelProcess | None" = None
+    ) -> ResourceScope:
+        """
+        Report the container, not the spawned process tree.
+
+        ``docker run`` is a thin client: the workload is reparented under the
+        daemon's supervisor in another process group, so the spawned tree
+        holds nothing worth measuring.  *process* is ignored for exactly that
+        reason.
+        """
+        del process
+        return ContainerScope(
+            container_id=await self._read_container_id(task),
+            cidfile=self._cidfile_path(task),
+        )
+
+    async def _read_container_id(self, task: "BaseTask") -> str | None:
+        """
+        Read the started container's id from the cidfile, or ``None``.
+
+        Best effort: the container may not have started yet, and a
+        measurement concern must never fail a task.
+        """
+        try:
+            raw = await task.target.get_file(self._cidfile_path(task))
+        except Exception:
+            return None
+        return raw.decode(errors="replace").strip() or None
+
     async def cancel_execution(self) -> None:
         """Stop the running container so it does not become orphaned.
 
@@ -306,15 +389,20 @@ class DockerExecutor(BaseExecutor):
         injected.  If no container is currently running (e.g. the task
         finished before the cancel arrived) this is a safe no-op.
         """
-        if self._container_name is None:
+        if self._container_name is None or self._target is None:
             return
         name = self._container_name
+        target = self._target
         self._container_name = None  # clear before stop — idempotent
-        proc = await asyncio.create_subprocess_exec(
-            "docker",
-            "stop",
-            name,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.wait()
+        # Goes through the target channel: the container runs on the target,
+        # so a local `docker stop` would stop nothing (or the wrong thing).
+        try:
+            proc = await target.run_command(
+                f"docker stop {shlex.quote(name)}", detach=False
+            )
+            await proc.wait()
+        except Exception as exc:
+            horus_logger.log.warning(
+                _("Failed to stop container %(name)s: %(err)s")
+                % {"name": name, "err": exc}
+            )

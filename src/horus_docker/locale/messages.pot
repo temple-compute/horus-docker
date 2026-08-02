@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: horus_docker VERSION\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-05-31 00:04+0200\n"
+"POT-Creation-Date: 2026-08-01 10:18+0200\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -18,42 +18,35 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Generated-By: Babel 2.18.0\n"
 
-#: src/horus_docker/executor/docker.py:41
-msgid "Executes a command inside a Docker container."
+#: src/horus_docker/executor/docker.py:47
+msgid "Executes a command inside a Docker container on the task target."
 msgstr ""
 
-#: src/horus_docker/executor/docker.py:148
+#: src/horus_docker/executor/docker.py:264
+#, python-format
+msgid "docker build failed with exit code %(code)s"
+msgstr ""
+
+#: src/horus_docker/executor/docker.py:275
 msgid "DockerExecutor only supports CommandRuntime runtimes."
 msgstr ""
 
-#: src/horus_docker/executor/docker.py:155
+#: src/horus_docker/executor/docker.py:290
 #, python-format
 msgid "Running task %(task_id)s in Docker image %(image)s: %(command)s"
 msgstr ""
 
-#: src/horus_docker/executor/docker.py:172
+#: src/horus_docker/executor/docker.py:328
 #, python-format
-msgid ""
-"Logs from task %(task_id)s Docker container:\n"
-"%(logs)s"
+msgid "Container for task %(task_id)s exited with code %(code)s. Output: %(out)s"
 msgstr ""
 
-#: src/horus_docker/executor/docker.py:178
-#, python-format
-msgid "Docker execution failed for task %(task_id)s: %(error)s"
-msgstr ""
-
-#: src/horus_docker/executor/docker.py:182
-#, python-format
-msgid "Docker execution failed: %(error)s"
-msgstr ""
-
-#: src/horus_docker/executor/docker.py:188
-#, python-format
-msgid "Container for task %(task_id)s exited with code %(code)s. Logs: %(logs)s"
-msgstr ""
-
-#: src/horus_docker/executor/docker.py:198
+#: src/horus_docker/executor/docker.py:339
 #, python-format
 msgid "Container exited with code %(code)s"
+msgstr ""
+
+#: src/horus_docker/executor/docker.py:405
+#, python-format
+msgid "Failed to stop container %(name)s: %(err)s"
 msgstr ""
