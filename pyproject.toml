@@ -6,7 +6,7 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
 ]
-dependencies = ["horus-runtime>=0.2.0"]
+dependencies = ["horus-runtime>=0.2.0", "horus-resource-monitor"]
 dynamic = ["version"]
 
 # ================
@@ -15,13 +15,18 @@ dynamic = ["version"]
 [project.entry-points."horus.executor"]
 docker = "horus_docker.executor.docker"
 
+[project.entry-points."horus.resource_probe"]
+container = "horus_docker.probe"
+
 # ================
 
-# TEMPORARY: pins the unmerged branch that introduces ResourceScope /
-# ContainerScope. Repoint at a released horus-runtime (and bump the
-# dependency specifier above) before this branch is merged.
+# TEMPORARY: pins the unmerged branches that introduce ResourceScope (horus-runtime)
+# and the scope-driven resource-probe framework (horus-resource-monitor).
+# Repoint at released versions (and bump the dependency specifiers above)
+# before these branches are merged.
 [tool.uv.sources]
 horus-runtime = { git = "https://github.com/temple-compute/horus-runtime", rev = "353eb7779d731e11d37488819e59fa978d706a95" }
+horus-resource-monitor = { git = "https://github.com/temple-compute/horus-resource-monitor", rev = "adc8329b35f569242595cc959a59311e499d3cad" }
 
 [dependency-groups]
 dev = [

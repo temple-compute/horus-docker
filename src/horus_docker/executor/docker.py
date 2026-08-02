@@ -16,12 +16,13 @@ from typing import TYPE_CHECKING, ClassVar
 from horus_builtin.runtime.command import CommandRuntime
 from horus_builtin.runtime.substitution import substitute
 from horus_runtime.core.executor.base import BaseExecutor, RuntimeFilterType
-from horus_runtime.core.resources import ContainerScope, ResourceScope
+from horus_runtime.core.resources import ResourceScope
 from horus_runtime.core.task.exceptions import TaskExecutionError
 from horus_runtime.logging import horus_logger
 from horus_runtime.settings import runtime_settings
 from pydantic import Field, PrivateAttr
 
+from horus_docker.executor.resources import ContainerScope
 from horus_docker.i18n import tr as _
 
 if TYPE_CHECKING:

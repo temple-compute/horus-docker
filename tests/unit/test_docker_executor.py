@@ -16,11 +16,11 @@ from horus_builtin.runtime.command import CommandRuntime
 from horus_builtin.task.horus_task import HorusTask
 from horus_runtime.context import HorusContext
 from horus_runtime.core.executor.base import BaseExecutor
-from horus_runtime.core.resources import ContainerScope
 from horus_runtime.core.task.exceptions import TaskExecutionError
 from horus_runtime.settings import runtime_settings
 
 from horus_docker.executor.docker import DockerExecutor
+from horus_docker.executor.resources import ContainerScope
 
 _IMAGE = "python:3.13-slim"
 _NONZERO_CODE = 2
