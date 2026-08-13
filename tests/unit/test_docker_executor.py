@@ -258,6 +258,20 @@ class TestBuildImage:
         mock_target.mkdir.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_build_command_uses_plain_progress(
+        self, horus_context: HorusContext
+    ) -> None:
+        """The build must ask BuildKit for newline-terminated progress."""
+        del horus_context
+        task, mock_target = self._make_task("FROM scratch")
+        with patch.object(task, "target", mock_target):
+            await DockerExecutor(
+                image="myapp:test", dockerfile="FROM scratch"
+            )._build_image(task)
+        build_cmd = mock_target.run_command.call_args[0][0]
+        assert "--progress=plain" in build_cmd
+
+    @pytest.mark.asyncio
     async def test_raises_on_nonzero_build_exit(
         self, horus_context: HorusContext
     ) -> None:

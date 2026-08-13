@@ -282,6 +282,7 @@ class DockerExecutor(BaseExecutor):
         context = self.build_context or task.working_dir
         build_cmd = (
             f"docker build"
+            f" --progress=plain"
             f" -t {shlex.quote(self.image)}"
             f" -f {shlex.quote(dockerfile_path)}"
             f" {shlex.quote(str(context))}"
@@ -290,7 +291,10 @@ class DockerExecutor(BaseExecutor):
         # Streamed, not buffered: a build pulls base images and runs layers,
         # which is minutes of silence otherwise. Logged at INFO rather than
         # DEBUG for the same reason -- at DEBUG the progress was invisible in
-        # a normal run, which is exactly when it is needed.
+        # a normal run, which is exactly when it is needed. --progress=plain
+        # makes BuildKit emit newline-terminated steps so the line-oriented
+        # stream reports them live instead of holding carriage-return
+        # progress until a newline or EOF.
         await _stream_to_log(proc)
         await proc.wait()
         if proc.returncode != 0:
