@@ -7,6 +7,7 @@
 """Unit tests for DockerExecutor."""
 
 import shlex
+from collections.abc import AsyncIterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -17,6 +18,7 @@ from horus_builtin.task.horus_task import HorusTask
 from horus_runtime.context import HorusContext
 from horus_runtime.core.executor.base import BaseExecutor
 from horus_runtime.core.task.exceptions import TaskExecutionError
+from horus_runtime.logging import horus_logger
 from horus_runtime.settings import runtime_settings
 
 from horus_docker.executor.docker import DockerExecutor
@@ -29,11 +31,23 @@ _NONZERO_CODE = 2
 def _make_mock_proc(
     returncode: int = 0, stdout: bytes = b"", stderr: bytes = b""
 ) -> AsyncMock:
-    """Return an AsyncMock ChannelProcess."""
+    """
+    Return an AsyncMock ChannelProcess.
+
+    ``stream`` is a real async generator rather than a mock: the executor
+    consumes it through ``aclosing``, which needs a genuine ``aclose``.
+    """
     proc = AsyncMock()
     proc.returncode = returncode
     proc.communicate = AsyncMock(return_value=(stdout, stderr))
     proc.wait = AsyncMock(return_value=returncode)
+
+    async def _stream() -> AsyncIterator[tuple[str, bytes]]:
+        for name, blob in (("stdout", stdout), ("stderr", stderr)):
+            for line in blob.splitlines():
+                yield name, line
+
+    proc.stream = _stream
     return proc
 
 
@@ -302,6 +316,104 @@ class TestDockerExecutorExecute:
                 TaskExecutionError, match="Container exited with code 1"
             ):
                 await executor._execute(task)
+
+    @pytest.mark.asyncio
+    async def test_execute_logs_output_as_it_arrives(
+        self, horus_context: HorusContext
+    ) -> None:
+        """
+        Container output is logged from the stream, not buffered to the end.
+
+        Docker reports image-pull progress on stderr while it downloads, which
+        can take many minutes; draining with ``communicate()`` withheld all of
+        it until exit and made a slow pull look like a hang.
+        """
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = self._make_task(executor)
+        mock_target = _make_mock_target(
+            _make_mock_proc(
+                stdout=b"hello from the container\n",
+                stderr=b"Pulling fs layer\nDownload complete\n",
+            )
+        )
+
+        messages: list[str] = []
+        sink_id = horus_logger.log.add(messages.append, level="INFO")
+        try:
+            with patch.object(task, "target", mock_target):
+                await executor._execute(task)
+        finally:
+            horus_logger.log.remove(sink_id)
+
+        logged = "".join(messages)
+        assert "hello from the container" in logged
+        # Pull progress goes to stderr; it must still be reported.
+        assert "Pulling fs layer" in logged
+        assert "Download complete" in logged
+
+    @pytest.mark.asyncio
+    async def test_execute_never_buffers_with_communicate(
+        self, horus_context: HorusContext
+    ) -> None:
+        """The blocking drain must not be used: it is what hid the pull."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = self._make_task(executor)
+        proc = _make_mock_proc(stdout=b"out\n")
+        with patch.object(task, "target", _make_mock_target(proc)):
+            await executor._execute(task)
+
+        proc.communicate.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_execute_failure_quotes_the_output_tail(
+        self, horus_context: HorusContext
+    ) -> None:
+        """A failure still reports what the container said before dying."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = self._make_task(executor, command="exit 1")
+        mock_target = _make_mock_target(
+            _make_mock_proc(returncode=1, stderr=b"ModuleNotFoundError: torch")
+        )
+
+        messages: list[str] = []
+        sink_id = horus_logger.log.add(messages.append, level="ERROR")
+        try:
+            with patch.object(task, "target", mock_target):
+                with pytest.raises(TaskExecutionError):
+                    await executor._execute(task)
+        finally:
+            horus_logger.log.remove(sink_id)
+
+        assert "ModuleNotFoundError: torch" in "".join(messages)
+
+    @pytest.mark.asyncio
+    async def test_build_logs_output_as_it_arrives(
+        self, horus_context: HorusContext
+    ) -> None:
+        """
+        Build output is streamed too, and at INFO.
+
+        It was logged at DEBUG, so a long build was invisible in a normal run.
+        """
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE, dockerfile="FROM scratch")
+        task = self._make_task(executor)
+        mock_target = _make_mock_target(
+            _make_mock_proc(stdout=b"Step 1/2 : FROM scratch\n")
+        )
+
+        messages: list[str] = []
+        sink_id = horus_logger.log.add(messages.append, level="INFO")
+        try:
+            with patch.object(task, "target", mock_target):
+                await executor._build_image(task)
+        finally:
+            horus_logger.log.remove(sink_id)
+
+        assert "Step 1/2 : FROM scratch" in "".join(messages)
 
     @pytest.mark.asyncio
     async def test_execute_calls_run_command_on_target(

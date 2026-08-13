@@ -10,6 +10,8 @@ Docker executor implementation for Horus.
 
 import asyncio
 import shlex
+from collections import deque
+from contextlib import aclosing
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -17,6 +19,7 @@ from horus_builtin.runtime.command import CommandRuntime
 from horus_builtin.runtime.substitution import substitute
 from horus_runtime.core.executor.base import BaseExecutor, RuntimeFilterType
 from horus_runtime.core.resources import ResourceScope
+from horus_runtime.core.target.channel import ChannelProcess
 from horus_runtime.core.task.exceptions import TaskExecutionError
 from horus_runtime.logging import horus_logger
 from horus_runtime.settings import runtime_settings
@@ -25,9 +28,40 @@ from pydantic import Field, PrivateAttr
 from horus_docker.executor.resources import ContainerScope
 from horus_docker.i18n import tr as _
 
+#: How many trailing output lines are kept to describe a failure. The full
+#: output has already been logged line by line by then; this is only what the
+#: raised error and the error log line quote.
+_ERROR_TAIL_LINES = 20
+
+
+async def _stream_to_log(proc: ChannelProcess) -> str:
+    """
+    Log *proc*'s output as it arrives, returning the tail for error messages.
+
+    Docker reports image-pull and build progress incrementally, and a pull can
+    take many minutes; draining the process with ``communicate()`` holds all of
+    it until the command exits, which makes a slow download indistinguishable
+    from a hung one. Reading the stream instead reports progress as it happens.
+    """
+    recent: deque[str] = deque(maxlen=_ERROR_TAIL_LINES)
+    async with aclosing(proc.stream()) as stream:
+        async for stream_name, line in stream:
+            text = line.decode("utf-8", errors="replace").rstrip()
+            if not text:
+                continue
+            recent.append(text)
+            # Docker writes pull/build progress to stderr, so stderr here is
+            # ordinary progress rather than a problem: log it, but keep it
+            # distinguishable from the container's own stdout.
+            if stream_name == "stderr":
+                horus_logger.log.warning(text)
+            else:
+                horus_logger.log.info(text)
+    return "\n".join(recent)
+
+
 if TYPE_CHECKING:
     from horus_runtime.core.target.base import BaseTarget
-    from horus_runtime.core.target.channel import ChannelProcess
     from horus_runtime.core.task.base import BaseTask
 
 CIDFILE_NAME = ".horus_container_id"
@@ -253,13 +287,12 @@ class DockerExecutor(BaseExecutor):
             f" {shlex.quote(str(context))}"
         )
         proc = await task.target.run_command(build_cmd)
-        stdout, stderr = await proc.communicate()
-        out = stdout.decode(errors="replace").strip() if stdout else ""
-        err = stderr.decode(errors="replace").strip() if stderr else ""
-        if out:
-            horus_logger.log.debug(out)
-        if err:
-            horus_logger.log.debug(err)
+        # Streamed, not buffered: a build pulls base images and runs layers,
+        # which is minutes of silence otherwise. Logged at INFO rather than
+        # DEBUG for the same reason -- at DEBUG the progress was invisible in
+        # a normal run, which is exactly when it is needed.
+        await _stream_to_log(proc)
+        await proc.wait()
         if proc.returncode != 0:
             raise TaskExecutionError(
                 _("docker build failed with exit code %(code)s")
@@ -309,18 +342,12 @@ class DockerExecutor(BaseExecutor):
         )
 
         try:
-            stdout, stderr = await proc.communicate()
+            output_tail = await _stream_to_log(proc)
         except asyncio.CancelledError:
             proc.kill()
             await proc.wait()
             raise
-
-        out = stdout.decode(errors="replace").strip() if stdout else ""
-        err = stderr.decode(errors="replace").strip() if stderr else ""
-        if out:
-            horus_logger.log.info(out)
-        if err:
-            horus_logger.log.warning(err)
+        await proc.wait()
 
         try:
             if proc.returncode != 0:
@@ -332,7 +359,7 @@ class DockerExecutor(BaseExecutor):
                     % {
                         "task_id": task.id,
                         "code": proc.returncode,
-                        "out": (out or err).strip(),
+                        "out": output_tail,
                     }
                 )
 
