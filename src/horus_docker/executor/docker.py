@@ -237,7 +237,7 @@ class DockerExecutor(BaseExecutor):
         if self.auto_remove:
             parts.append("--rm")
         if self._container_name is not None:
-            parts += ["--name", self._container_name]
+            parts += ["--name", shlex.quote(self._container_name)]
         if task is not None:
             # --cidfile is the CLI's own contract for "tell me which container
             # you started"; an observer needs the id because the workload runs
