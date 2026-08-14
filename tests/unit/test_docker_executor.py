@@ -213,6 +213,34 @@ class TestDockerRunCmd:
         # Last arg is the command passed to sh -c — must be exact
         assert parts[-1] == "echo $HOME && ls"
 
+    def test_container_name_is_shell_quoted(self) -> None:
+        """
+        --name value must be shell-quoted so metacharacters can't escape the
+        docker run invocation.
+        """
+        executor = DockerExecutor(image=_IMAGE)
+        executor._container_name = "evil; rm -rf / tmp"
+        cmd = executor._docker_run_cmd("true")
+        assert "--name" in cmd
+        assert shlex.quote("evil; rm -rf / tmp") in cmd
+        # shlex.split must round-trip the name as a single literal argument
+        assert shlex.split(cmd) == [
+            "docker",
+            "run",
+            "--rm",
+            "--name",
+            "evil; rm -rf / tmp",
+            _IMAGE,
+            "/bin/sh",
+            "-c",
+            "true",
+        ]
+
+    def test_container_name_default_omits_flag(self) -> None:
+        """--name flag must be absent when no container name is set."""
+        cmd = DockerExecutor(image=_IMAGE)._docker_run_cmd("true")
+        assert "--name" not in cmd
+
 
 @pytest.mark.unit
 class TestBuildImage:
