@@ -64,6 +64,18 @@ if TYPE_CHECKING:
     from horus_runtime.core.target.base import BaseTarget
     from horus_runtime.core.task.base import BaseTask
 
+UNBUFFERED_ENV = "PYTHONUNBUFFERED"
+"""
+Environment variable that stops CPython from block-buffering its output.
+
+The container's stdout is a pipe, not a terminal, so libc and CPython buffer
+it in kilobyte-sized blocks: a task that prints steadily for an hour reaches
+the reader as one burst when it exits, which is indistinguishable from a hung
+job. Docker's *own* client output (image pull progress) is written by the
+client process and is unaffected, which is why streaming appears to work right
+up to the moment the workload starts.
+"""
+
 CIDFILE_NAME = ".horus_container_id"
 """
 Name of the file, under the task's working directory, that ``docker run``
@@ -155,6 +167,16 @@ class DockerExecutor(BaseExecutor):
     Add ``--rm`` so the container is removed when it exits.
     """
 
+    tty: bool = False
+    """
+    Allocate a pseudo-TTY (``docker run -t``).
+
+    Line-buffers *any* workload rather than just Python ones, at the cost of
+    merging stderr into stdout and adding carriage returns to every line.
+    :data:`UNBUFFERED_ENV` covers the common case without either, so this is
+    the escape hatch for a non-Python binary that buffers its own output.
+    """
+
     dockerfile: str | None = None
     """
     Inline Dockerfile content.  Supports ``$id`` / ``${task.attr}``
@@ -205,6 +227,9 @@ class DockerExecutor(BaseExecutor):
         # ponytail: auto-mount artifact parent dirs; explicit volumes win
         auto_mounts: dict[str, str] = {}
         env = self._sub_dict(self.env, task)
+        # Unbuffered by default so output is streamable; setdefault, because a
+        # workflow that sets it explicitly has made a deliberate choice.
+        env.setdefault(UNBUFFERED_ENV, "1")
         if task is not None:
             for artifact in (*task.inputs, *task.outputs):
                 host_dir = str(artifact.path.parent)
@@ -236,6 +261,10 @@ class DockerExecutor(BaseExecutor):
         parts = ["docker", "run"]
         if self.auto_remove:
             parts.append("--rm")
+        if self.tty:
+            # -t without -i: the container gets a terminal to line-buffer
+            # against, but there is no stdin to attach to it.
+            parts.append("-t")
         if self._container_name is not None:
             parts += ["--name", shlex.quote(self._container_name)]
         if task is not None:

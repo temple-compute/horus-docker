@@ -230,6 +230,8 @@ class TestDockerRunCmd:
             "--rm",
             "--name",
             "evil; rm -rf / tmp",
+            "-e",
+            "PYTHONUNBUFFERED=1",
             _IMAGE,
             "/bin/sh",
             "-c",
@@ -240,6 +242,37 @@ class TestDockerRunCmd:
         """--name flag must be absent when no container name is set."""
         cmd = DockerExecutor(image=_IMAGE)._docker_run_cmd("true")
         assert "--name" not in cmd
+
+    def test_unbuffered_by_default(self) -> None:
+        """
+        PYTHONUNBUFFERED is set unconditionally, so a task's output reaches
+        the log reader as it is produced instead of in one burst at exit.
+        """
+        parts = shlex.split(DockerExecutor(image=_IMAGE)._docker_run_cmd("t"))
+        assert "PYTHONUNBUFFERED=1" in parts
+
+    def test_explicit_unbuffered_env_wins(self) -> None:
+        """An explicitly configured value is a deliberate choice; keep it."""
+        parts = shlex.split(
+            DockerExecutor(
+                image=_IMAGE, env={"PYTHONUNBUFFERED": "0"}
+            )._docker_run_cmd("true")
+        )
+        assert "PYTHONUNBUFFERED=0" in parts
+        assert "PYTHONUNBUFFERED=1" not in parts
+
+    def test_tty_included(self) -> None:
+        """-t must appear when tty is set, and never -i with it."""
+        parts = shlex.split(
+            DockerExecutor(image=_IMAGE, tty=True)._docker_run_cmd("true")
+        )
+        assert "-t" in parts
+        assert "-i" not in parts
+
+    def test_tty_default_omits_flag(self) -> None:
+        """-t must be absent by default."""
+        parts = shlex.split(DockerExecutor(image=_IMAGE)._docker_run_cmd("t"))
+        assert "-t" not in parts
 
 
 @pytest.mark.unit
