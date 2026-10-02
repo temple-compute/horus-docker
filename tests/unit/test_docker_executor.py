@@ -490,6 +490,49 @@ class TestDockerExecutorExecute:
 
         assert "Step 1/2 : FROM scratch" in "".join(messages)
 
+    @pytest.mark.parametrize(
+        ("task_id", "expected"),
+        [
+            ("test-task", "horus-test-task"),
+            ("score[00]", "horus-score_00_"),
+            ("a/b c", "horus-a_b_c"),
+        ],
+    )
+    def test_container_name_is_a_valid_docker_name(
+        self, horus_context: HorusContext, task_id: str, expected: str
+    ) -> None:
+        """
+        Docker rejects characters outside ``[a-zA-Z0-9_.-]`` in container
+        names; ``horus_map`` clones are called ``<id>[<slot>]``.
+        """
+        del horus_context
+        task = HorusTask(
+            id=task_id,
+            name="t",
+            executor=DockerExecutor(image=_IMAGE),
+            runtime=CommandRuntime(command="true"),
+        )
+        assert DockerExecutor._container_name_for(task) == expected
+
+    @pytest.mark.asyncio
+    async def test_execute_names_map_clone_containers_validly(
+        self, horus_context: HorusContext
+    ) -> None:
+        """A clone id like ``score[00]`` must not reach ``docker --name``."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = HorusTask(
+            id="score[00]",
+            name="score[00]",
+            executor=executor,
+            runtime=CommandRuntime(command="echo hello"),
+        )
+        mock_target = _make_mock_target()
+        with patch.object(task, "target", mock_target):
+            await executor._execute(task)
+        parts = shlex.split(mock_target.run_command.call_args[0][0])
+        assert parts[parts.index("--name") + 1] == "horus-score_00_"
+
     @pytest.mark.asyncio
     async def test_execute_calls_run_command_on_target(
         self, horus_context: HorusContext
