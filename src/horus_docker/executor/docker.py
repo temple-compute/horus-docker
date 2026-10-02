@@ -9,6 +9,7 @@ Docker executor implementation for Horus.
 """
 
 import asyncio
+import re
 import shlex
 from collections import deque
 from contextlib import aclosing
@@ -207,6 +208,17 @@ class DockerExecutor(BaseExecutor):
         return (Path(task.working_dir) / CIDFILE_NAME).as_posix()
 
     @staticmethod
+    def _container_name_for(task: "BaseTask") -> str:
+        """
+        Container name for *task*.
+
+        Docker only accepts ``[a-zA-Z0-9][a-zA-Z0-9_.-]`` in names, while
+        ``horus_map`` clones are called ``<id>[<slot>]``, so anything else in
+        the task id is replaced by ``_``.
+        """
+        return "horus-" + re.sub(r"[^a-zA-Z0-9_.-]", "_", task.id)
+
+    @staticmethod
     def _sub(value: str, task: "BaseTask | None") -> str:
         """Render ``$``/``${}`` artifact placeholders in *value*."""
         return substitute(value, task) if task is not None else value
@@ -346,7 +358,7 @@ class DockerExecutor(BaseExecutor):
         if self.dockerfile:
             await self._build_image(task)
 
-        self._container_name = f"horus-{task.id}"
+        self._container_name = self._container_name_for(task)
         self._target = task.target
         # docker refuses to start when the cidfile already exists, so a stale
         # one from a previous run of this task would wedge it forever.
