@@ -67,6 +67,13 @@ Registered under `kind = "docker"`. Only accepted when the task's runtime is a `
 4. Container logs are captured and emitted at `DEBUG` level.
 5. If the Docker daemon raises a `DockerException`, or the container exits with a non-zero status code, a `TaskExecutionError` is raised.
 
+### Task secrets
+
+Each key in the task's `secrets` is passed as `-e NAME`. Docker reads the value from its own environment, so it never appears in the `docker run` command line. Docker does store the value in the container config:
+
+- Anyone who can reach the Docker socket can read it with `docker inspect` or the daemon API. Access to the `docker` group is equivalent to root on the host.
+- With `auto_remove: false`, a stopped container keeps the value until it is removed.
+
 ---
 
 ## Development

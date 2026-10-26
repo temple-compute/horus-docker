@@ -286,6 +286,7 @@ class DockerExecutor(BaseExecutor):
             parts += ["--cidfile", shlex.quote(self._cidfile_path(task))]
             # Names only: docker copies the values from its own env, where
             # the runtime puts task secrets, so they never reach argv.
+            # They do land in the container config (docker inspect).
             parts += [f"-e {shlex.quote(name)}" for name in task.secrets]
         if self.gpus:
             parts += ["--gpus", shlex.quote(self.gpus)]
