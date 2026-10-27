@@ -19,6 +19,7 @@ from horus_runtime.context import HorusContext
 from horus_runtime.core.executor.base import BaseExecutor
 from horus_runtime.core.task.exceptions import TaskExecutionError
 from horus_runtime.logging import horus_logger
+from horus_runtime.secrets import Secret
 from horus_runtime.settings import runtime_settings
 
 from horus_docker.executor.docker import DockerExecutor
@@ -273,6 +274,39 @@ class TestDockerRunCmd:
         """-t must be absent by default."""
         parts = shlex.split(DockerExecutor(image=_IMAGE)._docker_run_cmd("t"))
         assert "-t" not in parts
+
+    @staticmethod
+    def _secret_task(executor: DockerExecutor) -> HorusTask:
+        return HorusTask(
+            id="t1",
+            name="secret_test",
+            executor=executor,
+            runtime=CommandRuntime(command="true"),
+            secrets={"HF_TOKEN": Secret("hf_abc")},
+        )
+
+    def test_task_secret_passes_name_only(self) -> None:
+        """A task secret is passed as a bare -e NAME; its value stays out."""
+        executor = DockerExecutor(image=_IMAGE)
+        parts = shlex.split(
+            executor._docker_run_cmd("true", self._secret_task(executor))
+        )
+        i = parts.index("HF_TOKEN")
+        assert parts[i - 1] == "-e"
+        assert not any("hf_abc" in p for p in parts)
+
+    def test_executor_env_follows_task_secret(self) -> None:
+        """An executor env entry comes after the bare name, so it wins."""
+        executor = DockerExecutor(image=_IMAGE, env={"HF_TOKEN": "x"})
+        parts = shlex.split(
+            executor._docker_run_cmd("true", self._secret_task(executor))
+        )
+        assert parts.index("HF_TOKEN") < parts.index("HF_TOKEN=x")
+
+    def test_no_task_adds_no_secret_names(self) -> None:
+        """Without a task there are no secret names to pass."""
+        parts = shlex.split(DockerExecutor(image=_IMAGE)._docker_run_cmd("t"))
+        assert parts.count("-e") == 1  # PYTHONUNBUFFERED only
 
 
 @pytest.mark.unit

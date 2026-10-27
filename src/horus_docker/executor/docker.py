@@ -284,6 +284,10 @@ class DockerExecutor(BaseExecutor):
             # you started"; an observer needs the id because the workload runs
             # under the daemon, not under this client process.
             parts += ["--cidfile", shlex.quote(self._cidfile_path(task))]
+            # Names only: docker copies the values from its own env, where
+            # the runtime puts task secrets, so they never reach argv.
+            # They do land in the container config (docker inspect).
+            parts += [f"-e {shlex.quote(name)}" for name in task.secrets]
         if self.gpus:
             parts += ["--gpus", shlex.quote(self.gpus)]
         for k, v in env.items():
