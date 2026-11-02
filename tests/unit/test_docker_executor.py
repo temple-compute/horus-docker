@@ -682,6 +682,30 @@ class TestDockerExecutorExecute:
         assert "/data/results:/data/results" in cmd
 
     @pytest.mark.asyncio
+    async def test_auto_mounts_use_the_targets_path(
+        self, horus_context: HorusContext
+    ) -> None:
+        """A remote target mounts the artifact dir on it, not the local one."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = HorusTask(
+            id="test-task",
+            name="test_task",
+            executor=executor,
+            runtime=CommandRuntime(command="true"),
+            outputs=[
+                FileArtifact(id="out", path=Path("/local/run/res/out.txt"))
+            ],
+        )
+        mock_target = _make_mock_target()
+        mock_target.path_on_target = lambda _: "/remote/wd/res/out.txt"
+        with patch.object(task, "target", mock_target):
+            await executor._execute(task)
+        cmd = mock_target.run_command.call_args[0][0]
+        assert "/remote/wd/res:/remote/wd/res" in cmd
+        assert "/local/run" not in cmd
+
+    @pytest.mark.asyncio
     async def test_explicit_volumes_override_auto_mounts(
         self, horus_context: HorusContext
     ) -> None:

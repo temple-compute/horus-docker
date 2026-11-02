@@ -9,6 +9,7 @@ Docker executor implementation for Horus.
 """
 
 import asyncio
+import posixpath
 import re
 import shlex
 from collections import deque
@@ -263,7 +264,11 @@ class DockerExecutor(BaseExecutor):
         env.setdefault(UNBUFFERED_ENV, "1")
         if task is not None:
             for artifact in (*task.inputs, *task.outputs):
-                host_dir = str(artifact.path.parent)
+                # The target's path, not the orchestrator's: on a remote
+                # target an output's own path is still the local one.
+                host_dir = posixpath.dirname(
+                    task.target.path_on_target(artifact)
+                )
                 auto_mounts[host_dir] = host_dir
             # The container is a different filesystem: the side-artifacts
             # directory the runtime collects from must be reachable at the
