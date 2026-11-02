@@ -239,17 +239,18 @@ class DockerExecutor(BaseExecutor):
     @staticmethod
     def _resource_limits(task: "BaseTask") -> list[str]:
         """
-        ``--cpus`` / ``--memory`` flags capping the container at what *task*
-        requested, as other engines (e.g. Nextflow's docker mode) do.
+        ``--cpu-shares`` / ``--memory`` flags for what *task* requested, the
+        same flags Nextflow's docker mode passes: a soft CPU weight (1024 per
+        core, so idle cores stay usable) and a hard memory limit in MiB.
         """
         resources = task.resources
         if resources is None:
             return []
         flags: list[str] = []
         if resources.cpus is not None:
-            flags += ["--cpus", str(resources.cpus)]
+            flags += ["--cpu-shares", str(resources.cpus * 1024)]
         if resources.memory_gb is not None:
-            flags += ["--memory", f"{resources.memory_gb}g"]
+            flags += ["--memory", f"{resources.memory_gb * 1024}m"]
         return flags
 
     def _volumes_and_env(

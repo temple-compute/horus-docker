@@ -327,14 +327,15 @@ class TestDockerRunCmd:
         )
 
     def test_task_resources_become_limits(self) -> None:
-        """Requested cpus and memory_gb map to --cpus and --memory."""
+        """Requested cpus and memory_gb map to Nextflow's docker flags."""
         executor = DockerExecutor(image=_IMAGE)
         task = self._resources_task(
             executor, ResourceRequest(cpus=4, memory_gb=16)
         )
         parts = shlex.split(executor._docker_run_cmd("true", task))
-        assert parts[parts.index("--cpus") + 1] == "4"
-        assert parts[parts.index("--memory") + 1] == "16g"
+        assert parts[parts.index("--cpu-shares") + 1] == "4096"
+        assert parts[parts.index("--memory") + 1] == "16384m"
+        assert "--cpus" not in parts  # a soft weight, not a hard quota
 
     def test_unset_resources_add_no_limits(self) -> None:
         """No request, or an empty one, leaves the container unlimited."""
@@ -342,7 +343,7 @@ class TestDockerRunCmd:
         for resources in (None, ResourceRequest()):
             task = self._resources_task(executor, resources)
             parts = shlex.split(executor._docker_run_cmd("true", task))
-            assert "--cpus" not in parts
+            assert "--cpu-shares" not in parts
             assert "--memory" not in parts
 
 
