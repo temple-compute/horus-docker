@@ -17,6 +17,7 @@ from horus_builtin.runtime.command import CommandRuntime
 from horus_builtin.task.horus_task import HorusTask
 from horus_runtime.context import HorusContext
 from horus_runtime.core.executor.base import BaseExecutor
+from horus_runtime.core.resources import ResourceRequest
 from horus_runtime.core.task.exceptions import TaskExecutionError
 from horus_runtime.logging import horus_logger
 from horus_runtime.secrets import Secret
@@ -307,6 +308,37 @@ class TestDockerRunCmd:
         """Without a task there are no secret names to pass."""
         parts = shlex.split(DockerExecutor(image=_IMAGE)._docker_run_cmd("t"))
         assert parts.count("-e") == 1  # PYTHONUNBUFFERED only
+
+    @staticmethod
+    def _resources_task(
+        executor: DockerExecutor, resources: ResourceRequest | None
+    ) -> HorusTask:
+        return HorusTask(
+            id="t1",
+            name="resources_test",
+            executor=executor,
+            runtime=CommandRuntime(command="true"),
+            resources=resources,
+        )
+
+    def test_task_resources_become_limits(self) -> None:
+        """Requested cpus and memory_gb map to --cpus and --memory."""
+        executor = DockerExecutor(image=_IMAGE)
+        task = self._resources_task(
+            executor, ResourceRequest(cpus=4, memory_gb=16)
+        )
+        parts = shlex.split(executor._docker_run_cmd("true", task))
+        assert parts[parts.index("--cpus") + 1] == "4"
+        assert parts[parts.index("--memory") + 1] == "16g"
+
+    def test_unset_resources_add_no_limits(self) -> None:
+        """No request, or an empty one, leaves the container unlimited."""
+        executor = DockerExecutor(image=_IMAGE)
+        for resources in (None, ResourceRequest()):
+            task = self._resources_task(executor, resources)
+            parts = shlex.split(executor._docker_run_cmd("true", task))
+            assert "--cpus" not in parts
+            assert "--memory" not in parts
 
 
 @pytest.mark.unit

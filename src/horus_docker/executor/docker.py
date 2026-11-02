@@ -232,6 +232,22 @@ class DockerExecutor(BaseExecutor):
             cls._sub(k, task): cls._sub(v, task) for k, v in mapping.items()
         }
 
+    @staticmethod
+    def _resource_limits(task: "BaseTask") -> list[str]:
+        """
+        ``--cpus`` / ``--memory`` flags capping the container at what *task*
+        requested, as other engines (e.g. Nextflow's docker mode) do.
+        """
+        resources = task.resources
+        if resources is None:
+            return []
+        flags: list[str] = []
+        if resources.cpus is not None:
+            flags += ["--cpus", str(resources.cpus)]
+        if resources.memory_gb is not None:
+            flags += ["--memory", f"{resources.memory_gb}g"]
+        return flags
+
     def _volumes_and_env(
         self, task: "BaseTask | None"
     ) -> tuple[dict[str, str], dict[str, str]]:
@@ -288,6 +304,7 @@ class DockerExecutor(BaseExecutor):
             # the runtime puts task secrets, so they never reach argv.
             # They do land in the container config (docker inspect).
             parts += [f"-e {shlex.quote(name)}" for name in task.secrets]
+            parts += self._resource_limits(task)
         if self.gpus:
             parts += ["--gpus", shlex.quote(self.gpus)]
         for k, v in env.items():
