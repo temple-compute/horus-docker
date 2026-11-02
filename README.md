@@ -56,7 +56,7 @@ Registered under `kind = "docker"`. Only accepted when the task's runtime is a `
 | `working_dir` | `str \| None` | `None` | Working directory inside the container |
 | `network` | `str \| None` | `None` | Docker network to attach the container to |
 | `entrypoint` | `str \| list[str] \| None` | `None` | Override the image's `ENTRYPOINT` |
-| `user` | `str \| None` | `None` | User (`name`/`uid`, optionally `uid:gid`) to run as |
+| `user` | `str \| None` | `None` | User (`name`/`uid`, optionally `uid:gid`) to run as; `host` runs as the target user running docker |
 | `auto_remove` | `bool` | `True` | Remove the container after execution finishes |
 
 ### Behaviour

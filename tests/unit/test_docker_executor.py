@@ -188,6 +188,11 @@ class TestDockerRunCmd:
         assert "-u" in cmd
         assert "1000:1000" in cmd
 
+    def test_host_user_resolved_by_target_shell(self) -> None:
+        """user=host emits an unquoted $(id -u):$(id -g) for the target."""
+        cmd = DockerExecutor(image=_IMAGE, user="host")._docker_run_cmd("t")
+        assert '-u "$(id -u):$(id -g)"' in cmd
+
     def test_entrypoint_string_included(self) -> None:
         """--entrypoint must appear when entrypoint is a string."""
         cmd = DockerExecutor(

@@ -155,6 +155,9 @@ class DockerExecutor(BaseExecutor):
     user: str | None = None
     """
     User (``name``, ``uid``, or ``uid:gid``) to run the command as.
+
+    ``host`` runs as the uid:gid of the user running ``docker`` on the target,
+    so outputs are not root-owned (like nf-core's ``-u $(id -u):$(id -g)``).
     """
 
     gpus: str | None = None
@@ -320,7 +323,12 @@ class DockerExecutor(BaseExecutor):
         if entrypoint is not None:
             parts += ["--entrypoint", shlex.quote(entrypoint)]
         if user:
-            parts += ["-u", shlex.quote(user)]
+            # "host": unquoted so the target's shell, not the orchestrator,
+            # resolves the ids of the user running docker there.
+            parts += [
+                "-u",
+                '"$(id -u):$(id -g)"' if user == "host" else shlex.quote(user),
+            ]
         parts += [
             shlex.quote(self.image),
             "/bin/sh",
