@@ -18,7 +18,10 @@ from horus_builtin.task.horus_task import HorusTask
 from horus_runtime.context import HorusContext
 from horus_runtime.core.executor.base import BaseExecutor
 from horus_runtime.core.resources import ResourceRequest
-from horus_runtime.core.task.exceptions import TaskExecutionError
+from horus_runtime.core.task.exceptions import (
+    CommandFailedError,
+    TaskExecutionError,
+)
 from horus_runtime.logging import horus_logger
 from horus_runtime.secrets import Secret
 from horus_runtime.settings import runtime_settings
@@ -422,6 +425,23 @@ class TestBuildImage:
                     image="myapp:test", dockerfile="FROM scratch"
                 )._build_image(task)
 
+    @pytest.mark.asyncio
+    async def test_build_failure_is_not_droppable(
+        self, horus_context: HorusContext
+    ) -> None:
+        """A build failure must not be a CommandFailedError."""
+        del horus_context
+        task, mock_target = self._make_task("FROM scratch")
+        mock_target.run_command = AsyncMock(
+            return_value=_make_mock_proc(returncode=1)
+        )
+        with patch.object(task, "target", mock_target):
+            with pytest.raises(TaskExecutionError) as exc_info:
+                await DockerExecutor(
+                    image="myapp:test", dockerfile="FROM scratch"
+                )._build_image(task)
+        assert not isinstance(exc_info.value, CommandFailedError)
+
 
 @pytest.mark.unit
 class TestDockerExecutorExecute:
@@ -448,21 +468,41 @@ class TestDockerExecutorExecute:
             await executor._execute(task)
 
     @pytest.mark.asyncio
-    async def test_execute_nonzero_exit_raises(
-        self, horus_context: HorusContext
+    @pytest.mark.parametrize("code", [1, 10, 126, 127])
+    async def test_container_exit_raises_command_failed_error(
+        self, horus_context: HorusContext, code: int
     ) -> None:
-        """A non-zero container exit code must raise TaskExecutionError."""
+        """A non-zero exit raises CommandFailedError with the code."""
         del horus_context
         executor = DockerExecutor(image=_IMAGE)
-        task = self._make_task(executor, command="exit 1")
+        task = self._make_task(executor, command=f"exit {code}")
         mock_target = _make_mock_target(
-            _make_mock_proc(returncode=1, stderr=b"something went wrong")
+            _make_mock_proc(returncode=code, stderr=b"something went wrong")
         )
         with patch.object(task, "target", mock_target):
             with pytest.raises(
-                TaskExecutionError, match="Container exited with code 1"
-            ):
+                CommandFailedError, match=f"Container exited with code {code}"
+            ) as exc_info:
                 await executor._execute(task)
+        assert exc_info.value.exit_code == code
+
+    @pytest.mark.asyncio
+    async def test_docker_run_failure_is_not_droppable(
+        self, horus_context: HorusContext
+    ) -> None:
+        """Exit 125 is docker's own failure, not a CommandFailedError."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = self._make_task(executor)
+        mock_target = _make_mock_target(
+            _make_mock_proc(returncode=125, stderr=b"pull access denied")
+        )
+        with patch.object(task, "target", mock_target):
+            with pytest.raises(
+                TaskExecutionError, match="Container exited with code 125"
+            ) as exc_info:
+                await executor._execute(task)
+        assert not isinstance(exc_info.value, CommandFailedError)
 
     @pytest.mark.asyncio
     async def test_execute_logs_output_as_it_arrives(
