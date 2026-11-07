@@ -23,7 +23,7 @@ from horus_runtime.core.task.exceptions import (
     TaskExecutionError,
 )
 from horus_runtime.logging import horus_logger
-from horus_runtime.secrets import Secret
+from horus_runtime.secrets import Secret, TaskSecret
 from horus_runtime.settings import runtime_settings
 
 from horus_docker.executor.docker import DockerExecutor
@@ -291,7 +291,7 @@ class TestDockerRunCmd:
             name="secret_test",
             executor=executor,
             runtime=CommandRuntime(command="true"),
-            secrets={"HF_TOKEN": Secret("hf_abc")},
+            secrets={"HF_TOKEN": TaskSecret(value=Secret("hf_abc"))},
         )
 
     def test_task_secret_passes_name_only(self) -> None:
