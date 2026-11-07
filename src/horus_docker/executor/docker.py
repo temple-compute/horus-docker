@@ -9,6 +9,7 @@ Docker executor implementation for Horus.
 """
 
 import asyncio
+import posixpath
 import re
 import shlex
 from collections import deque
@@ -155,6 +156,9 @@ class DockerExecutor(BaseExecutor):
     user: str | None = None
     """
     User (``name``, ``uid``, or ``uid:gid``) to run the command as.
+
+    ``host`` runs as the uid:gid of the user running ``docker`` on the target,
+    so outputs are not root-owned (like nf-core's ``-u $(id -u):$(id -g)``).
     """
 
     gpus: str | None = None
@@ -232,6 +236,23 @@ class DockerExecutor(BaseExecutor):
             cls._sub(k, task): cls._sub(v, task) for k, v in mapping.items()
         }
 
+    @staticmethod
+    def _resource_limits(task: "BaseTask") -> list[str]:
+        """
+        ``--cpu-shares`` / ``--memory`` flags for what *task* requested, the
+        same flags Nextflow's docker mode passes: a soft CPU weight (1024 per
+        core, so idle cores stay usable) and a hard memory limit in MiB.
+        """
+        resources = task.resources
+        if resources is None:
+            return []
+        flags: list[str] = []
+        if resources.cpus is not None:
+            flags += ["--cpu-shares", str(resources.cpus * 1024)]
+        if resources.memory_gb is not None:
+            flags += ["--memory", f"{resources.memory_gb * 1024}m"]
+        return flags
+
     def _volumes_and_env(
         self, task: "BaseTask | None"
     ) -> tuple[dict[str, str], dict[str, str]]:
@@ -244,7 +265,11 @@ class DockerExecutor(BaseExecutor):
         env.setdefault(UNBUFFERED_ENV, "1")
         if task is not None:
             for artifact in (*task.inputs, *task.outputs):
-                host_dir = str(artifact.path.parent)
+                # The target's path, not the orchestrator's: on a remote
+                # target an output's own path is still the local one.
+                host_dir = posixpath.dirname(
+                    task.target.path_on_target(artifact)
+                )
                 auto_mounts[host_dir] = host_dir
             # The container is a different filesystem: the side-artifacts
             # directory the runtime collects from must be reachable at the
@@ -288,6 +313,7 @@ class DockerExecutor(BaseExecutor):
             # the runtime puts task secrets, so they never reach argv.
             # They do land in the container config (docker inspect).
             parts += [f"-e {shlex.quote(name)}" for name in task.secrets]
+            parts += self._resource_limits(task)
         if self.gpus:
             parts += ["--gpus", shlex.quote(self.gpus)]
         for k, v in env.items():
@@ -303,7 +329,12 @@ class DockerExecutor(BaseExecutor):
         if entrypoint is not None:
             parts += ["--entrypoint", shlex.quote(entrypoint)]
         if user:
-            parts += ["-u", shlex.quote(user)]
+            # "host": unquoted so the target's shell, not the orchestrator,
+            # resolves the ids of the user running docker there.
+            parts += [
+                "-u",
+                '"$(id -u):$(id -g)"' if user == "host" else shlex.quote(user),
+            ]
         parts += [
             shlex.quote(self.image),
             "/bin/sh",

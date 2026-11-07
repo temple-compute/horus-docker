@@ -17,6 +17,7 @@ from horus_builtin.runtime.command import CommandRuntime
 from horus_builtin.task.horus_task import HorusTask
 from horus_runtime.context import HorusContext
 from horus_runtime.core.executor.base import BaseExecutor
+from horus_runtime.core.resources import ResourceRequest
 from horus_runtime.core.task.exceptions import TaskExecutionError
 from horus_runtime.logging import horus_logger
 from horus_runtime.secrets import Secret
@@ -187,6 +188,11 @@ class TestDockerRunCmd:
         assert "-u" in cmd
         assert "1000:1000" in cmd
 
+    def test_host_user_resolved_by_target_shell(self) -> None:
+        """user=host emits an unquoted $(id -u):$(id -g) for the target."""
+        cmd = DockerExecutor(image=_IMAGE, user="host")._docker_run_cmd("t")
+        assert '-u "$(id -u):$(id -g)"' in cmd
+
     def test_entrypoint_string_included(self) -> None:
         """--entrypoint must appear when entrypoint is a string."""
         cmd = DockerExecutor(
@@ -307,6 +313,38 @@ class TestDockerRunCmd:
         """Without a task there are no secret names to pass."""
         parts = shlex.split(DockerExecutor(image=_IMAGE)._docker_run_cmd("t"))
         assert parts.count("-e") == 1  # PYTHONUNBUFFERED only
+
+    @staticmethod
+    def _resources_task(
+        executor: DockerExecutor, resources: ResourceRequest | None
+    ) -> HorusTask:
+        return HorusTask(
+            id="t1",
+            name="resources_test",
+            executor=executor,
+            runtime=CommandRuntime(command="true"),
+            resources=resources,
+        )
+
+    def test_task_resources_become_limits(self) -> None:
+        """Requested cpus and memory_gb map to Nextflow's docker flags."""
+        executor = DockerExecutor(image=_IMAGE)
+        task = self._resources_task(
+            executor, ResourceRequest(cpus=4, memory_gb=16)
+        )
+        parts = shlex.split(executor._docker_run_cmd("true", task))
+        assert parts[parts.index("--cpu-shares") + 1] == "4096"
+        assert parts[parts.index("--memory") + 1] == "16384m"
+        assert "--cpus" not in parts  # a soft weight, not a hard quota
+
+    def test_unset_resources_add_no_limits(self) -> None:
+        """No request, or an empty one, leaves the container unlimited."""
+        executor = DockerExecutor(image=_IMAGE)
+        for resources in (None, ResourceRequest()):
+            task = self._resources_task(executor, resources)
+            parts = shlex.split(executor._docker_run_cmd("true", task))
+            assert "--cpu-shares" not in parts
+            assert "--memory" not in parts
 
 
 @pytest.mark.unit
@@ -643,6 +681,30 @@ class TestDockerExecutorExecute:
         cmd = mock_target.run_command.call_args[0][0]
         assert "-v" in cmd
         assert "/data/results:/data/results" in cmd
+
+    @pytest.mark.asyncio
+    async def test_auto_mounts_use_the_targets_path(
+        self, horus_context: HorusContext
+    ) -> None:
+        """A remote target mounts the artifact dir on it, not the local one."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = HorusTask(
+            id="test-task",
+            name="test_task",
+            executor=executor,
+            runtime=CommandRuntime(command="true"),
+            outputs=[
+                FileArtifact(id="out", path=Path("/local/run/res/out.txt"))
+            ],
+        )
+        mock_target = _make_mock_target()
+        mock_target.path_on_target = lambda _: "/remote/wd/res/out.txt"
+        with patch.object(task, "target", mock_target):
+            await executor._execute(task)
+        cmd = mock_target.run_command.call_args[0][0]
+        assert "/remote/wd/res:/remote/wd/res" in cmd
+        assert "/local/run" not in cmd
 
     @pytest.mark.asyncio
     async def test_explicit_volumes_override_auto_mounts(
