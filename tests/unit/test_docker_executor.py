@@ -660,6 +660,7 @@ class TestDockerExecutorExecute:
         cmd_arg = mock_target.run_command.call_args[0][0]
         assert "docker run" in cmd_arg
         assert _IMAGE in cmd_arg
+        assert mock_target.run_command.call_args.kwargs["task"] is task
 
     @pytest.mark.asyncio
     async def test_execute_with_dockerfile_builds_then_runs(
