@@ -422,6 +422,7 @@ class DockerExecutor(BaseExecutor):
                     task.side_artifacts_dir
                 )
             },
+            task=task,
         )
 
         try:
