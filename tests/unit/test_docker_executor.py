@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from horus_builtin.artifact.file import FileArtifact
 from horus_builtin.runtime.command import CommandRuntime
+from horus_builtin.target.local import LocalTarget
 from horus_builtin.task.horus_task import HorusTask
 from horus_runtime.context import HorusContext
 from horus_runtime.core.executor.base import BaseExecutor
@@ -661,6 +662,22 @@ class TestDockerExecutorExecute:
         assert "docker run" in cmd_arg
         assert _IMAGE in cmd_arg
         assert mock_target.run_command.call_args.kwargs["task"] is task
+
+    @pytest.mark.asyncio
+    async def test_execute_reaches_the_real_run_command(
+        self, horus_context: HorusContext, tmp_path: Path
+    ) -> None:
+        """The main run goes through ``BaseTarget.run_command`` with task."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = self._make_task(executor, command="echo hello")
+        task.target = LocalTarget(working_directory=tmp_path.as_posix())
+        dispatched = AsyncMock(return_value=_make_mock_proc())
+        with patch.object(LocalTarget, "_run_command", dispatched):
+            await executor._execute(task)
+        (ctx,) = dispatched.call_args.args
+        assert "docker run" in ctx.command
+        assert ctx.task is task
 
     @pytest.mark.asyncio
     async def test_execute_with_dockerfile_builds_then_runs(
