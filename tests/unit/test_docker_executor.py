@@ -6,6 +6,7 @@
 #
 """Unit tests for DockerExecutor."""
 
+import re
 import shlex
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -606,9 +607,9 @@ class TestDockerExecutorExecute:
     @pytest.mark.parametrize(
         ("task_id", "expected"),
         [
-            ("test-task", "horus-test-task"),
-            ("score[00]", "horus-score_00_"),
-            ("a/b c", "horus-a_b_c"),
+            ("test-task", "horus-test-task-"),
+            ("score[00]", "horus-score_00_-"),
+            ("a/b c", "horus-a_b_c-"),
         ],
     )
     def test_container_name_is_a_valid_docker_name(
@@ -625,7 +626,23 @@ class TestDockerExecutorExecute:
             executor=DockerExecutor(image=_IMAGE),
             runtime=CommandRuntime(command="true"),
         )
-        assert DockerExecutor._container_name_for(task) == expected
+        name = DockerExecutor._container_name_for(task)
+        assert re.fullmatch(re.escape(expected) + "[0-9a-f]{8}", name)
+
+    def test_container_name_is_unique_per_execution(
+        self, horus_context: HorusContext
+    ) -> None:
+        """The task id repeats across runs; the name must not."""
+        del horus_context
+        task = HorusTask(
+            id="t",
+            name="t",
+            executor=DockerExecutor(image=_IMAGE),
+            runtime=CommandRuntime(command="true"),
+        )
+        assert DockerExecutor._container_name_for(
+            task
+        ) != DockerExecutor._container_name_for(task)
 
     @pytest.mark.asyncio
     async def test_execute_names_map_clone_containers_validly(
@@ -644,7 +661,42 @@ class TestDockerExecutorExecute:
         with patch.object(task, "target", mock_target):
             await executor._execute(task)
         parts = shlex.split(mock_target.run_command.call_args[0][0])
-        assert parts[parts.index("--name") + 1] == "horus-score_00_"
+        assert re.fullmatch(
+            r"horus-score_00_-[0-9a-f]{8}", parts[parts.index("--name") + 1]
+        )
+
+    @pytest.mark.asyncio
+    async def test_failed_run_removes_the_container(
+        self, horus_context: HorusContext
+    ) -> None:
+        """Exit 125 can leave a Created container that --rm never removes."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = self._make_task(executor)
+        mock_target = _make_mock_target(_make_mock_proc(returncode=125))
+        with patch.object(task, "target", mock_target):
+            with pytest.raises(TaskExecutionError):
+                await executor._execute(task)
+        run_cmd, rm_cmd = (
+            c.args[0] for c in mock_target.run_command.call_args_list
+        )
+        parts = shlex.split(run_cmd)
+        name = parts[parts.index("--name") + 1]
+        assert rm_cmd == f"docker rm -f {name}"
+
+    @pytest.mark.asyncio
+    async def test_failed_run_keeps_the_container_without_auto_remove(
+        self, horus_context: HorusContext
+    ) -> None:
+        """auto_remove=False keeps a failed container for inspection."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE, auto_remove=False)
+        task = self._make_task(executor)
+        mock_target = _make_mock_target(_make_mock_proc(returncode=1))
+        with patch.object(task, "target", mock_target):
+            with pytest.raises(CommandFailedError):
+                await executor._execute(task)
+        mock_target.run_command.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_execute_calls_run_command_on_target(

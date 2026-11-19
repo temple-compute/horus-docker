@@ -16,6 +16,7 @@ from collections import deque
 from contextlib import aclosing
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
+from uuid import uuid4
 
 from horus_builtin.runtime.command import CommandRuntime
 from horus_builtin.runtime.substitution import substitute
@@ -199,7 +200,7 @@ class DockerExecutor(BaseExecutor):
 
     _container_name: str | None = PrivateAttr(default=None)
     """
-    Predictable container name assigned at execute-time so
+    Container name assigned at execute-time so
     :meth:`cancel_execution` can stop it by name.
     """
 
@@ -217,13 +218,15 @@ class DockerExecutor(BaseExecutor):
     @staticmethod
     def _container_name_for(task: "BaseTask") -> str:
         """
-        Container name for *task*.
+        Container name for one execution of *task*.
 
         Docker only accepts ``[a-zA-Z0-9][a-zA-Z0-9_.-]`` in names, while
         ``horus_map`` clones are called ``<id>[<slot>]``, so anything else in
-        the task id is replaced by ``_``.
+        the task id is replaced by ``_``. A random suffix keeps the name
+        unique: the id repeats across runs, and two slots can sanitise alike.
         """
-        return "horus-" + re.sub(r"[^a-zA-Z0-9_.-]", "_", task.id)
+        safe_id = re.sub(r"[^a-zA-Z0-9_.-]", "_", task.id)
+        return f"horus-{safe_id}-{uuid4().hex[:8]}"
 
     @staticmethod
     def _sub(value: str, task: "BaseTask | None") -> str:
@@ -432,6 +435,7 @@ class DockerExecutor(BaseExecutor):
             await proc.wait()
             raise
         code = await proc.wait()
+        name = self._container_name
 
         try:
             if code != 0:
@@ -458,14 +462,25 @@ class DockerExecutor(BaseExecutor):
         finally:
             self._container_name = None
             self._target = None
+            if code != 0 and self.auto_remove and name is not None:
+                # --rm only acts after a container ran; one left in Created
+                # (exit 125) would otherwise stay behind.
+                await self._run_quietly(
+                    task.target, f"docker rm -f {shlex.quote(name)}"
+                )
             if self.dockerfile:
-                try:
-                    rmi = await task.target.run_command(
-                        f"docker rmi -f {shlex.quote(self.image)}"
-                    )
-                    await rmi.wait()
-                except Exception:
-                    pass
+                await self._run_quietly(
+                    task.target, f"docker rmi -f {shlex.quote(self.image)}"
+                )
+
+    @staticmethod
+    async def _run_quietly(target: "BaseTarget", cmd: str) -> None:
+        """Run a best-effort cleanup *cmd* on *target*, ignoring failures."""
+        try:
+            proc = await target.run_command(cmd)
+            await proc.wait()
+        except Exception:
+            pass
 
     async def resource_scope(
         self, task: "BaseTask", process: "ChannelProcess | None" = None
@@ -498,7 +513,7 @@ class DockerExecutor(BaseExecutor):
         return raw.decode(errors="replace").strip() or None
 
     async def cancel_execution(self) -> None:
-        """Stop the running container so it does not become orphaned.
+        """Stop and remove the running container so it is not orphaned.
 
         Called by ``BaseTarget.cancel()`` before ``CancelledError`` is
         injected.  If no container is currently running (e.g. the task
@@ -511,9 +526,12 @@ class DockerExecutor(BaseExecutor):
         self._container_name = None  # clear before stop — idempotent
         # Goes through the target channel: the container runs on the target,
         # so a local `docker stop` would stop nothing (or the wrong thing).
+        # rm -f also removes a container still in Created; its exit code is
+        # ignored, since --rm may already have removed it.
+        quoted = shlex.quote(name)
         try:
             proc = await target.run_command(
-                f"docker stop {shlex.quote(name)}", detach=False
+                f"docker stop {quoted}; docker rm -f {quoted}", detach=False
             )
             await proc.wait()
         except Exception as exc:

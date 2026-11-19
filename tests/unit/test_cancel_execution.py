@@ -37,7 +37,8 @@ class TestCancelExecution:
         await executor.cancel_execution()
 
         target.run_command.assert_awaited_once_with(
-            "docker stop horus-test-task", detach=False
+            "docker stop horus-test-task; docker rm -f horus-test-task",
+            detach=False,
         )
         proc.wait.assert_awaited_once()
 
