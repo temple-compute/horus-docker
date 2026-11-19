@@ -539,10 +539,11 @@ class DockerExecutor(BaseExecutor):
         # rm -f also removes a container still in Created; its exit code is
         # ignored, since --rm may already have removed it.
         quoted = shlex.quote(name)
+        cmd = f"docker stop {quoted}"
+        if self.auto_remove:
+            cmd += f"; docker rm -f {quoted}"
         try:
-            proc = await target.run_command(
-                f"docker stop {quoted}; docker rm -f {quoted}", detach=False
-            )
+            proc = await target.run_command(cmd, detach=False)
             await proc.wait()
         except Exception as exc:
             horus_logger.log.warning(
