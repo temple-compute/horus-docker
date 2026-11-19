@@ -6,14 +6,19 @@
 #
 """Unit tests for DockerExecutor."""
 
+import asyncio
+import os
+import re
 import shlex
+import subprocess
 from collections.abc import AsyncIterator
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from horus_builtin.artifact.file import FileArtifact
 from horus_builtin.runtime.command import CommandRuntime
+from horus_builtin.target.local import LocalTarget
 from horus_builtin.task.horus_task import HorusTask
 from horus_runtime.context import HorusContext
 from horus_runtime.core.executor.base import BaseExecutor
@@ -26,7 +31,7 @@ from horus_runtime.logging import horus_logger
 from horus_runtime.secrets import Secret, TaskSecret
 from horus_runtime.settings import runtime_settings
 
-from horus_docker.executor.docker import DockerExecutor
+from horus_docker.executor.docker import _HOMELESS_PREFIX, DockerExecutor
 from horus_docker.executor.resources import ContainerScope
 
 _IMAGE = "python:3.13-slim"
@@ -195,6 +200,62 @@ class TestDockerRunCmd:
         """user=host emits an unquoted $(id -u):$(id -g) for the target."""
         cmd = DockerExecutor(image=_IMAGE, user="host")._docker_run_cmd("t")
         assert '-u "$(id -u):$(id -g)"' in cmd
+
+    @pytest.mark.parametrize("user", ["host", "1000:1000", "app"])
+    def test_user_gets_the_homeless_prefix(self, user: str) -> None:
+        """HOME is left to the container; only the guarded prefix is added."""
+        parts = shlex.split(
+            DockerExecutor(image=_IMAGE, user=user)._docker_run_cmd("java x")
+        )
+        assert not any(p.startswith("HOME=") for p in parts)
+        assert parts[-1] == _HOMELESS_PREFIX + "java x"
+
+    def test_no_home_without_user(self) -> None:
+        """Without user the image's own HOME and command are untouched."""
+        parts = shlex.split(DockerExecutor(image=_IMAGE)._docker_run_cmd("x"))
+        assert not any(p.startswith("HOME=") for p in parts)
+        assert parts[-1] == "x"
+
+    def test_explicit_home_passed_through(self) -> None:
+        """A workflow's env HOME reaches the container unchanged."""
+        parts = shlex.split(
+            DockerExecutor(
+                image=_IMAGE, user="host", env={"HOME": "/work"}
+            )._docker_run_cmd("x")
+        )
+        assert "HOME=/work" in parts
+
+    @pytest.mark.parametrize(
+        ("home", "java_opts", "expected"),
+        [
+            # uid without a passwd entry: docker sets HOME=/
+            ("/", "", "/tmp|-Duser.home=/tmp"),
+            ("/", "-Xmx1g", "/tmp|-Xmx1g -Duser.home=/tmp"),
+            # root, named users, image users, explicit env HOME
+            ("/root", "", "/root|"),
+            ("/home/app", "-Xmx1g", "/home/app|-Xmx1g"),
+            ("/work", "", "/work|"),
+        ],
+    )
+    def test_homeless_prefix_in_shell(
+        self, home: str, java_opts: str, expected: str
+    ) -> None:
+        """Only HOME=/ is moved to /tmp; every other home is kept."""
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": home}
+        if java_opts:
+            env["JAVA_TOOL_OPTIONS"] = java_opts
+        out = subprocess.run(
+            [
+                "/bin/sh",
+                "-c",
+                _HOMELESS_PREFIX + 'printf %s "$HOME|$JAVA_TOOL_OPTIONS"',
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert out == expected
 
     def test_entrypoint_string_included(self) -> None:
         """--entrypoint must appear when entrypoint is a string."""
@@ -535,9 +596,10 @@ class TestDockerExecutorExecute:
 
         logged = "".join(messages)
         assert "hello from the container" in logged
-        # Pull progress goes to stderr; it must still be reported.
+        # Pull progress goes to stderr; it must still be reported, at INFO.
         assert "Pulling fs layer" in logged
         assert "Download complete" in logged
+        assert all("| INFO" in m for m in messages), messages
 
     @pytest.mark.asyncio
     async def test_execute_never_buffers_with_communicate(
@@ -605,9 +667,9 @@ class TestDockerExecutorExecute:
     @pytest.mark.parametrize(
         ("task_id", "expected"),
         [
-            ("test-task", "horus-test-task"),
-            ("score[00]", "horus-score_00_"),
-            ("a/b c", "horus-a_b_c"),
+            ("test-task", "horus-test-task-"),
+            ("score[00]", "horus-score_00_-"),
+            ("a/b c", "horus-a_b_c-"),
         ],
     )
     def test_container_name_is_a_valid_docker_name(
@@ -624,7 +686,23 @@ class TestDockerExecutorExecute:
             executor=DockerExecutor(image=_IMAGE),
             runtime=CommandRuntime(command="true"),
         )
-        assert DockerExecutor._container_name_for(task) == expected
+        name = DockerExecutor._container_name_for(task)
+        assert re.fullmatch(re.escape(expected) + "[0-9a-f]{8}", name)
+
+    def test_container_name_is_unique_per_execution(
+        self, horus_context: HorusContext
+    ) -> None:
+        """The task id repeats across runs; the name must not."""
+        del horus_context
+        task = HorusTask(
+            id="t",
+            name="t",
+            executor=DockerExecutor(image=_IMAGE),
+            runtime=CommandRuntime(command="true"),
+        )
+        assert DockerExecutor._container_name_for(
+            task
+        ) != DockerExecutor._container_name_for(task)
 
     @pytest.mark.asyncio
     async def test_execute_names_map_clone_containers_validly(
@@ -643,7 +721,69 @@ class TestDockerExecutorExecute:
         with patch.object(task, "target", mock_target):
             await executor._execute(task)
         parts = shlex.split(mock_target.run_command.call_args[0][0])
-        assert parts[parts.index("--name") + 1] == "horus-score_00_"
+        assert re.fullmatch(
+            r"horus-score_00_-[0-9a-f]{8}", parts[parts.index("--name") + 1]
+        )
+
+    @pytest.mark.asyncio
+    async def test_failed_run_removes_the_container(
+        self, horus_context: HorusContext
+    ) -> None:
+        """Exit 125 can leave a Created container that --rm never removes."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = self._make_task(executor)
+        mock_target = _make_mock_target(_make_mock_proc(returncode=125))
+        with patch.object(task, "target", mock_target):
+            with pytest.raises(TaskExecutionError):
+                await executor._execute(task)
+        run_call, rm_call = mock_target.run_command.call_args_list
+        parts = shlex.split(run_call.args[0])
+        name = parts[parts.index("--name") + 1]
+        assert rm_call == call(f"docker rm -f {name}", detach=False)
+
+    @pytest.mark.asyncio
+    async def test_failed_run_keeps_the_container_without_auto_remove(
+        self, horus_context: HorusContext
+    ) -> None:
+        """auto_remove=False keeps a failed container for inspection."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE, auto_remove=False)
+        task = self._make_task(executor)
+        mock_target = _make_mock_target(_make_mock_proc(returncode=1))
+        with patch.object(task, "target", mock_target):
+            with pytest.raises(CommandFailedError):
+                await executor._execute(task)
+        mock_target.run_command.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_run_stops_the_container(
+        self, horus_context: HorusContext
+    ) -> None:
+        """A cancel that bypassed BaseTarget.cancel() still stops it."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = self._make_task(executor)
+        proc = _make_mock_proc()
+
+        async def _cancelled() -> AsyncIterator[tuple[str, bytes]]:
+            raise asyncio.CancelledError
+            yield  # pragma: no cover
+
+        proc.stream = _cancelled
+        proc.kill = MagicMock()
+        mock_target = _make_mock_target(proc)
+        with patch.object(task, "target", mock_target):
+            with pytest.raises(asyncio.CancelledError):
+                await executor._execute(task)
+        run_call, stop_call = mock_target.run_command.call_args_list
+        parts = shlex.split(run_call.args[0])
+        name = parts[parts.index("--name") + 1]
+        assert stop_call == call(
+            f"docker stop {name}; docker rm -f {name}", detach=False
+        )
+        assert executor._container_name is None
+        assert executor._target is None
 
     @pytest.mark.asyncio
     async def test_execute_calls_run_command_on_target(
@@ -660,6 +800,23 @@ class TestDockerExecutorExecute:
         cmd_arg = mock_target.run_command.call_args[0][0]
         assert "docker run" in cmd_arg
         assert _IMAGE in cmd_arg
+        assert mock_target.run_command.call_args.kwargs["task"] is task
+
+    @pytest.mark.asyncio
+    async def test_execute_reaches_the_real_run_command(
+        self, horus_context: HorusContext, tmp_path: Path
+    ) -> None:
+        """The main run goes through ``BaseTarget.run_command`` with task."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = self._make_task(executor, command="echo hello")
+        task.target = LocalTarget(working_directory=tmp_path.as_posix())
+        dispatched = AsyncMock(return_value=_make_mock_proc())
+        with patch.object(LocalTarget, "_run_command", dispatched):
+            await executor._execute(task)
+        (ctx,) = dispatched.call_args.args
+        assert "docker run" in ctx.command
+        assert ctx.task is task
 
     @pytest.mark.asyncio
     async def test_execute_with_dockerfile_builds_then_runs(
@@ -679,7 +836,9 @@ class TestDockerExecutorExecute:
         calls = [c[0][0] for c in mock_target.run_command.call_args_list]
         assert any("docker build" in c for c in calls)
         assert any("docker run" in c for c in calls)
-        assert any("docker rmi" in c for c in calls)
+        assert mock_target.run_command.call_args_list[-1] == call(
+            "docker rmi -f myapp:test", detach=False
+        )
 
     @pytest.mark.asyncio
     async def test_execute_without_dockerfile_no_build(

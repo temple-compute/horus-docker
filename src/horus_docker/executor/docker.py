@@ -16,6 +16,7 @@ from collections import deque
 from contextlib import aclosing
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
+from uuid import uuid4
 
 from horus_builtin.runtime.command import CommandRuntime
 from horus_builtin.runtime.substitution import substitute
@@ -50,18 +51,14 @@ async def _stream_to_log(proc: ChannelProcess) -> str:
     """
     recent: deque[str] = deque(maxlen=_ERROR_TAIL_LINES)
     async with aclosing(proc.stream()) as stream:
-        async for stream_name, line in stream:
+        async for _stream_name, line in stream:
             text = line.decode("utf-8", errors="replace").rstrip()
             if not text:
                 continue
             recent.append(text)
-            # Docker writes pull/build progress to stderr, so stderr here is
-            # ordinary progress rather than a problem: log it, but keep it
-            # distinguishable from the container's own stdout.
-            if stream_name == "stderr":
-                horus_logger.log.warning(text)
-            else:
-                horus_logger.log.info(text)
+            # INFO for stderr too: it carries docker's pull/build progress and
+            # tools' chatter, not errors. A failure is logged at ERROR below.
+            horus_logger.log.info(text)
     return "\n".join(recent)
 
 
@@ -79,6 +76,19 @@ the reader as one burst when it exits, which is indistinguishable from a hung
 job. Docker's *own* client output (image pull progress) is written by the
 client process and is unaffected, which is why streaming appears to work right
 up to the moment the workload starts.
+"""
+
+_HOMELESS_PREFIX = (
+    'if [ "$HOME" = / ]; then export HOME=/tmp JAVA_TOOL_OPTIONS='
+    '"${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }-Duser.home=/tmp"; fi; '
+)
+"""
+Shell prefix for a ``user`` with no passwd entry in the image.
+
+Docker sets ``HOME=/`` for such a uid, and Java then writes ``?/.java`` into
+the outputs. Decided inside the container, where the passwd lookup already
+happened, so root and named users keep their home. ``-Duser.home`` covers JDKs
+that ignore ``HOME``, appended to the image's own ``JAVA_TOOL_OPTIONS``.
 """
 
 CIDFILE_NAME = ".horus_container_id"
@@ -199,7 +209,7 @@ class DockerExecutor(BaseExecutor):
 
     _container_name: str | None = PrivateAttr(default=None)
     """
-    Predictable container name assigned at execute-time so
+    Container name assigned at execute-time so
     :meth:`cancel_execution` can stop it by name.
     """
 
@@ -217,13 +227,15 @@ class DockerExecutor(BaseExecutor):
     @staticmethod
     def _container_name_for(task: "BaseTask") -> str:
         """
-        Container name for *task*.
+        Container name for one execution of *task*.
 
         Docker only accepts ``[a-zA-Z0-9][a-zA-Z0-9_.-]`` in names, while
         ``horus_map`` clones are called ``<id>[<slot>]``, so anything else in
-        the task id is replaced by ``_``.
+        the task id is replaced by ``_``. A random suffix keeps the name
+        unique: the id repeats across runs, and two slots can sanitise alike.
         """
-        return "horus-" + re.sub(r"[^a-zA-Z0-9_.-]", "_", task.id)
+        safe_id = re.sub(r"[^a-zA-Z0-9_.-]", "_", task.id)
+        return f"horus-{safe_id}-{uuid4().hex[:8]}"
 
     @staticmethod
     def _sub(value: str, task: "BaseTask | None") -> str:
@@ -338,6 +350,7 @@ class DockerExecutor(BaseExecutor):
                 "-u",
                 '"$(id -u):$(id -g)"' if user == "host" else shlex.quote(user),
             ]
+            prepared_command = _HOMELESS_PREFIX + prepared_command
         parts += [
             shlex.quote(self.image),
             "/bin/sh",
@@ -422,6 +435,7 @@ class DockerExecutor(BaseExecutor):
                     task.side_artifacts_dir
                 )
             },
+            task=task,
         )
 
         try:
@@ -429,8 +443,13 @@ class DockerExecutor(BaseExecutor):
         except asyncio.CancelledError:
             proc.kill()
             await proc.wait()
+            # Killing the client leaves the container running; a no-op when
+            # BaseTarget.cancel() already stopped it.
+            await self.cancel_execution()
+            self._target = None
             raise
         code = await proc.wait()
+        name = self._container_name
 
         try:
             if code != 0:
@@ -457,14 +476,25 @@ class DockerExecutor(BaseExecutor):
         finally:
             self._container_name = None
             self._target = None
+            if code != 0 and self.auto_remove and name is not None:
+                # --rm only acts after a container ran; one left in Created
+                # (exit 125) would otherwise stay behind.
+                await self._run_quietly(
+                    task.target, f"docker rm -f {shlex.quote(name)}"
+                )
             if self.dockerfile:
-                try:
-                    rmi = await task.target.run_command(
-                        f"docker rmi -f {shlex.quote(self.image)}"
-                    )
-                    await rmi.wait()
-                except Exception:
-                    pass
+                await self._run_quietly(
+                    task.target, f"docker rmi -f {shlex.quote(self.image)}"
+                )
+
+    @staticmethod
+    async def _run_quietly(target: "BaseTarget", cmd: str) -> None:
+        """Run a best-effort cleanup *cmd* on *target*, ignoring failures."""
+        try:
+            proc = await target.run_command(cmd, detach=False)
+            await proc.wait()
+        except Exception:
+            pass
 
     async def resource_scope(
         self, task: "BaseTask", process: "ChannelProcess | None" = None
@@ -497,7 +527,7 @@ class DockerExecutor(BaseExecutor):
         return raw.decode(errors="replace").strip() or None
 
     async def cancel_execution(self) -> None:
-        """Stop the running container so it does not become orphaned.
+        """Stop and remove the running container so it is not orphaned.
 
         Called by ``BaseTarget.cancel()`` before ``CancelledError`` is
         injected.  If no container is currently running (e.g. the task
@@ -510,10 +540,14 @@ class DockerExecutor(BaseExecutor):
         self._container_name = None  # clear before stop — idempotent
         # Goes through the target channel: the container runs on the target,
         # so a local `docker stop` would stop nothing (or the wrong thing).
+        # rm -f also removes a container still in Created; its exit code is
+        # ignored, since --rm may already have removed it.
+        quoted = shlex.quote(name)
+        cmd = f"docker stop {quoted}"
+        if self.auto_remove:
+            cmd += f"; docker rm -f {quoted}"
         try:
-            proc = await target.run_command(
-                f"docker stop {shlex.quote(name)}", detach=False
-            )
+            proc = await target.run_command(cmd, detach=False)
             await proc.wait()
         except Exception as exc:
             horus_logger.log.warning(

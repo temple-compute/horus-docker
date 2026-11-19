@@ -37,9 +37,23 @@ class TestCancelExecution:
         await executor.cancel_execution()
 
         target.run_command.assert_awaited_once_with(
-            "docker stop horus-test-task", detach=False
+            "docker stop horus-test-task; docker rm -f horus-test-task",
+            detach=False,
         )
         proc.wait.assert_awaited_once()
+
+    async def test_cancel_execution_keeps_container_without_auto_remove(
+        self,
+    ) -> None:
+        """auto_remove=False stops the container and keeps it."""
+        executor, target, _proc = _armed_executor()
+        executor.auto_remove = False
+
+        await executor.cancel_execution()
+
+        target.run_command.assert_awaited_once_with(
+            "docker stop horus-test-task", detach=False
+        )
 
     async def test_cancel_execution_noop_when_no_container(self) -> None:
         """cancel_execution must be a no-op when no container is running."""
