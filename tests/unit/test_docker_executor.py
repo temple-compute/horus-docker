@@ -566,6 +566,37 @@ class TestDockerExecutorExecute:
         assert not isinstance(exc_info.value, CommandFailedError)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("code", "level"), [(3, "INFO"), (4, "ERROR"), (125, "ERROR")]
+    )
+    async def test_drop_code_exit_logs_at_info(
+        self, horus_context: HorusContext, code: int, level: str
+    ) -> None:
+        """A map clone's drop code is a clean drop, not an ERROR."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = self._make_task(executor)
+        mock_target = _make_mock_target(_make_mock_proc(returncode=code))
+
+        messages: list[str] = []
+        sink_id = horus_logger.log.add(messages.append, level="INFO")
+        try:
+            with (
+                patch.object(task, "target", mock_target),
+                patch.object(
+                    task, "_drop_exit_codes", frozenset({3, 125}), create=True
+                ),
+                pytest.raises(TaskExecutionError),
+            ):
+                await executor._execute(task)
+        finally:
+            horus_logger.log.remove(sink_id)
+
+        exits = [m for m in messages if "exited with code" in m]
+        assert len(exits) == 1, messages
+        assert f"| {level}" in exits[0]
+
+    @pytest.mark.asyncio
     async def test_execute_logs_output_as_it_arrives(
         self, horus_context: HorusContext
     ) -> None:
