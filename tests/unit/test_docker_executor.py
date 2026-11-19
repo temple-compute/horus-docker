@@ -12,7 +12,7 @@ import shlex
 import subprocess
 from collections.abc import AsyncIterator
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from horus_builtin.artifact.file import FileArtifact
@@ -736,12 +736,10 @@ class TestDockerExecutorExecute:
         with patch.object(task, "target", mock_target):
             with pytest.raises(TaskExecutionError):
                 await executor._execute(task)
-        run_cmd, rm_cmd = (
-            c.args[0] for c in mock_target.run_command.call_args_list
-        )
-        parts = shlex.split(run_cmd)
+        run_call, rm_call = mock_target.run_command.call_args_list
+        parts = shlex.split(run_call.args[0])
         name = parts[parts.index("--name") + 1]
-        assert rm_cmd == f"docker rm -f {name}"
+        assert rm_call == call(f"docker rm -f {name}", detach=False)
 
     @pytest.mark.asyncio
     async def test_failed_run_keeps_the_container_without_auto_remove(
@@ -808,7 +806,9 @@ class TestDockerExecutorExecute:
         calls = [c[0][0] for c in mock_target.run_command.call_args_list]
         assert any("docker build" in c for c in calls)
         assert any("docker run" in c for c in calls)
-        assert any("docker rmi" in c for c in calls)
+        assert mock_target.run_command.call_args_list[-1] == call(
+            "docker rmi -f myapp:test", detach=False
+        )
 
     @pytest.mark.asyncio
     async def test_execute_without_dockerfile_no_build(

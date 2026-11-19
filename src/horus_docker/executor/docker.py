@@ -487,7 +487,7 @@ class DockerExecutor(BaseExecutor):
     async def _run_quietly(target: "BaseTarget", cmd: str) -> None:
         """Run a best-effort cleanup *cmd* on *target*, ignoring failures."""
         try:
-            proc = await target.run_command(cmd)
+            proc = await target.run_command(cmd, detach=False)
             await proc.wait()
         except Exception:
             pass
