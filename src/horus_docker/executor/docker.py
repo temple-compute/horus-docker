@@ -453,7 +453,17 @@ class DockerExecutor(BaseExecutor):
 
         try:
             if code != 0:
-                horus_logger.log.error(
+                # A map's drop code is a clean drop: log it at INFO. getattr
+                # because horus-runtime before 0.11.0 lacks the field.
+                drops: frozenset[int] = getattr(
+                    task, "_drop_exit_codes", frozenset()
+                )
+                log = (
+                    horus_logger.log.info
+                    if code != 125 and code in drops
+                    else horus_logger.log.error
+                )
+                log(
                     _(
                         "Container for task %(task_id)s exited with code "
                         "%(code)s. Output: %(out)s"
