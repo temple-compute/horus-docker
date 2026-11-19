@@ -51,18 +51,14 @@ async def _stream_to_log(proc: ChannelProcess) -> str:
     """
     recent: deque[str] = deque(maxlen=_ERROR_TAIL_LINES)
     async with aclosing(proc.stream()) as stream:
-        async for stream_name, line in stream:
+        async for _stream_name, line in stream:
             text = line.decode("utf-8", errors="replace").rstrip()
             if not text:
                 continue
             recent.append(text)
-            # Docker writes pull/build progress to stderr, so stderr here is
-            # ordinary progress rather than a problem: log it, but keep it
-            # distinguishable from the container's own stdout.
-            if stream_name == "stderr":
-                horus_logger.log.warning(text)
-            else:
-                horus_logger.log.info(text)
+            # INFO for stderr too: it carries docker's pull/build progress and
+            # tools' chatter, not errors. A failure is logged at ERROR below.
+            horus_logger.log.info(text)
     return "\n".join(recent)
 
 

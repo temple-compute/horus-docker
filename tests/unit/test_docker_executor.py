@@ -565,9 +565,10 @@ class TestDockerExecutorExecute:
 
         logged = "".join(messages)
         assert "hello from the container" in logged
-        # Pull progress goes to stderr; it must still be reported.
+        # Pull progress goes to stderr; it must still be reported, at INFO.
         assert "Pulling fs layer" in logged
         assert "Download complete" in logged
+        assert all("| INFO" in m for m in messages), messages
 
     @pytest.mark.asyncio
     async def test_execute_never_buffers_with_communicate(
