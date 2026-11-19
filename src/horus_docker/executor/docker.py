@@ -443,6 +443,10 @@ class DockerExecutor(BaseExecutor):
         except asyncio.CancelledError:
             proc.kill()
             await proc.wait()
+            # Killing the client leaves the container running; a no-op when
+            # BaseTarget.cancel() already stopped it.
+            await self.cancel_execution()
+            self._target = None
             raise
         code = await proc.wait()
         name = self._container_name

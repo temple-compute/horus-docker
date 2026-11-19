@@ -6,6 +6,7 @@
 #
 """Unit tests for DockerExecutor."""
 
+import asyncio
 import os
 import re
 import shlex
@@ -754,6 +755,35 @@ class TestDockerExecutorExecute:
             with pytest.raises(CommandFailedError):
                 await executor._execute(task)
         mock_target.run_command.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_run_stops_the_container(
+        self, horus_context: HorusContext
+    ) -> None:
+        """A cancel that bypassed BaseTarget.cancel() still stops it."""
+        del horus_context
+        executor = DockerExecutor(image=_IMAGE)
+        task = self._make_task(executor)
+        proc = _make_mock_proc()
+
+        async def _cancelled() -> AsyncIterator[tuple[str, bytes]]:
+            raise asyncio.CancelledError
+            yield  # pragma: no cover
+
+        proc.stream = _cancelled
+        proc.kill = MagicMock()
+        mock_target = _make_mock_target(proc)
+        with patch.object(task, "target", mock_target):
+            with pytest.raises(asyncio.CancelledError):
+                await executor._execute(task)
+        run_call, stop_call = mock_target.run_command.call_args_list
+        parts = shlex.split(run_call.args[0])
+        name = parts[parts.index("--name") + 1]
+        assert stop_call == call(
+            f"docker stop {name}; docker rm -f {name}", detach=False
+        )
+        assert executor._container_name is None
+        assert executor._target is None
 
     @pytest.mark.asyncio
     async def test_execute_calls_run_command_on_target(
