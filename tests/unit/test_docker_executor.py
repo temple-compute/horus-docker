@@ -198,6 +198,34 @@ class TestDockerRunCmd:
         cmd = DockerExecutor(image=_IMAGE, user="host")._docker_run_cmd("t")
         assert '-u "$(id -u):$(id -g)"' in cmd
 
+    @pytest.mark.parametrize("user", ["host", "1000:1000"])
+    def test_user_gets_a_home_outside_the_outputs(self, user: str) -> None:
+        """A uid without a passwd entry gets HOME and user.home in /tmp."""
+        parts = shlex.split(
+            DockerExecutor(image=_IMAGE, user=user)._docker_run_cmd("java x")
+        )
+        assert "HOME=/tmp" in parts
+        assert parts[-1] == (
+            'export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:+'
+            '$JAVA_TOOL_OPTIONS }-Duser.home=$HOME"; java x'
+        )
+
+    def test_no_home_without_user(self) -> None:
+        """Without user the image's own HOME and command are untouched."""
+        parts = shlex.split(DockerExecutor(image=_IMAGE)._docker_run_cmd("x"))
+        assert not any(p.startswith("HOME=") for p in parts)
+        assert parts[-1] == "x"
+
+    def test_explicit_home_wins(self) -> None:
+        """A workflow's env HOME is kept."""
+        parts = shlex.split(
+            DockerExecutor(
+                image=_IMAGE, user="host", env={"HOME": "/work"}
+            )._docker_run_cmd("x")
+        )
+        assert "HOME=/work" in parts
+        assert "HOME=/tmp" not in parts
+
     def test_entrypoint_string_included(self) -> None:
         """--entrypoint must appear when entrypoint is a string."""
         cmd = DockerExecutor(

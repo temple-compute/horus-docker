@@ -269,6 +269,11 @@ class DockerExecutor(BaseExecutor):
         # Unbuffered by default so output is streamable; setdefault, because a
         # workflow that sets it explicitly has made a deliberate choice.
         env.setdefault(UNBUFFERED_ENV, "1")
+        if self.user:
+            # The uid may have no passwd entry, which leaves HOME at "/" and
+            # makes Java write "?/.java" into the outputs; /tmp leaves with
+            # the container.
+            env.setdefault("HOME", "/tmp")
         if task is not None:
             for artifact in (*task.inputs, *task.outputs):
                 # The target's path, not the orchestrator's: on a remote
@@ -341,6 +346,12 @@ class DockerExecutor(BaseExecutor):
                 "-u",
                 '"$(id -u):$(id -g)"' if user == "host" else shlex.quote(user),
             ]
+            # JDKs that ignore HOME: append user.home to the image's own
+            # JAVA_TOOL_OPTIONS instead of replacing it.
+            prepared_command = (
+                'export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:+'
+                '$JAVA_TOOL_OPTIONS }-Duser.home=$HOME"; ' + prepared_command
+            )
         parts += [
             shlex.quote(self.image),
             "/bin/sh",
