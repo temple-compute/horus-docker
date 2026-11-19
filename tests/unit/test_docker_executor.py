@@ -6,8 +6,10 @@
 #
 """Unit tests for DockerExecutor."""
 
+import os
 import re
 import shlex
+import subprocess
 from collections.abc import AsyncIterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -28,7 +30,7 @@ from horus_runtime.logging import horus_logger
 from horus_runtime.secrets import Secret, TaskSecret
 from horus_runtime.settings import runtime_settings
 
-from horus_docker.executor.docker import DockerExecutor
+from horus_docker.executor.docker import _HOMELESS_PREFIX, DockerExecutor
 from horus_docker.executor.resources import ContainerScope
 
 _IMAGE = "python:3.13-slim"
@@ -198,17 +200,14 @@ class TestDockerRunCmd:
         cmd = DockerExecutor(image=_IMAGE, user="host")._docker_run_cmd("t")
         assert '-u "$(id -u):$(id -g)"' in cmd
 
-    @pytest.mark.parametrize("user", ["host", "1000:1000"])
-    def test_user_gets_a_home_outside_the_outputs(self, user: str) -> None:
-        """A uid without a passwd entry gets HOME and user.home in /tmp."""
+    @pytest.mark.parametrize("user", ["host", "1000:1000", "app"])
+    def test_user_gets_the_homeless_prefix(self, user: str) -> None:
+        """HOME is left to the container; only the guarded prefix is added."""
         parts = shlex.split(
             DockerExecutor(image=_IMAGE, user=user)._docker_run_cmd("java x")
         )
-        assert "HOME=/tmp" in parts
-        assert parts[-1] == (
-            'export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:+'
-            '$JAVA_TOOL_OPTIONS }-Duser.home=$HOME"; java x'
-        )
+        assert not any(p.startswith("HOME=") for p in parts)
+        assert parts[-1] == _HOMELESS_PREFIX + "java x"
 
     def test_no_home_without_user(self) -> None:
         """Without user the image's own HOME and command are untouched."""
@@ -216,15 +215,46 @@ class TestDockerRunCmd:
         assert not any(p.startswith("HOME=") for p in parts)
         assert parts[-1] == "x"
 
-    def test_explicit_home_wins(self) -> None:
-        """A workflow's env HOME is kept."""
+    def test_explicit_home_passed_through(self) -> None:
+        """A workflow's env HOME reaches the container unchanged."""
         parts = shlex.split(
             DockerExecutor(
                 image=_IMAGE, user="host", env={"HOME": "/work"}
             )._docker_run_cmd("x")
         )
         assert "HOME=/work" in parts
-        assert "HOME=/tmp" not in parts
+
+    @pytest.mark.parametrize(
+        ("home", "java_opts", "expected"),
+        [
+            # uid without a passwd entry: docker sets HOME=/
+            ("/", "", "/tmp|-Duser.home=/tmp"),
+            ("/", "-Xmx1g", "/tmp|-Xmx1g -Duser.home=/tmp"),
+            # root, named users, image users, explicit env HOME
+            ("/root", "", "/root|"),
+            ("/home/app", "-Xmx1g", "/home/app|-Xmx1g"),
+            ("/work", "", "/work|"),
+        ],
+    )
+    def test_homeless_prefix_in_shell(
+        self, home: str, java_opts: str, expected: str
+    ) -> None:
+        """Only HOME=/ is moved to /tmp; every other home is kept."""
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": home}
+        if java_opts:
+            env["JAVA_TOOL_OPTIONS"] = java_opts
+        out = subprocess.run(
+            [
+                "/bin/sh",
+                "-c",
+                _HOMELESS_PREFIX + 'printf %s "$HOME|$JAVA_TOOL_OPTIONS"',
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert out == expected
 
     def test_entrypoint_string_included(self) -> None:
         """--entrypoint must appear when entrypoint is a string."""

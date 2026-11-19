@@ -78,6 +78,19 @@ client process and is unaffected, which is why streaming appears to work right
 up to the moment the workload starts.
 """
 
+_HOMELESS_PREFIX = (
+    'if [ "$HOME" = / ]; then export HOME=/tmp JAVA_TOOL_OPTIONS='
+    '"${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }-Duser.home=/tmp"; fi; '
+)
+"""
+Shell prefix for a ``user`` with no passwd entry in the image.
+
+Docker sets ``HOME=/`` for such a uid, and Java then writes ``?/.java`` into
+the outputs. Decided inside the container, where the passwd lookup already
+happened, so root and named users keep their home. ``-Duser.home`` covers JDKs
+that ignore ``HOME``, appended to the image's own ``JAVA_TOOL_OPTIONS``.
+"""
+
 CIDFILE_NAME = ".horus_container_id"
 """
 Name of the file, under the task's working directory, that ``docker run``
@@ -265,11 +278,6 @@ class DockerExecutor(BaseExecutor):
         # Unbuffered by default so output is streamable; setdefault, because a
         # workflow that sets it explicitly has made a deliberate choice.
         env.setdefault(UNBUFFERED_ENV, "1")
-        if self.user:
-            # The uid may have no passwd entry, which leaves HOME at "/" and
-            # makes Java write "?/.java" into the outputs; /tmp leaves with
-            # the container.
-            env.setdefault("HOME", "/tmp")
         if task is not None:
             for artifact in (*task.inputs, *task.outputs):
                 # The target's path, not the orchestrator's: on a remote
@@ -342,12 +350,7 @@ class DockerExecutor(BaseExecutor):
                 "-u",
                 '"$(id -u):$(id -g)"' if user == "host" else shlex.quote(user),
             ]
-            # JDKs that ignore HOME: append user.home to the image's own
-            # JAVA_TOOL_OPTIONS instead of replacing it.
-            prepared_command = (
-                'export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:+'
-                '$JAVA_TOOL_OPTIONS }-Duser.home=$HOME"; ' + prepared_command
-            )
+            prepared_command = _HOMELESS_PREFIX + prepared_command
         parts += [
             shlex.quote(self.image),
             "/bin/sh",
